@@ -1,4 +1,8 @@
-## ADDED Requirements
+# Remote Ingestion
+
+**Purpose**: Accept snapshot POSTs from remote collector instances, enabling multi-user and team dashboard scenarios (Mode B) where collectors push data to a shared server.
+
+## Requirements
 
 ### Requirement: Server accepts snapshot POST from remote collectors
 

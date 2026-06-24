@@ -1,4 +1,8 @@
-## ADDED Requirements
+# Snapshot Serving
+
+**Purpose**: Serve the latest snapshot and its sub-resources (skills, tools, sessions) as structured JSON via REST endpoints — providing the contract between the data collector backend and the Grafana frontend.
+
+## Requirements
 
 ### Requirement: Health endpoint returns server status
 

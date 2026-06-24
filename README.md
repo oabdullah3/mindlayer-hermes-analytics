@@ -93,21 +93,21 @@ The server exposes a JSON-only API on port 5555:
 
 | Method | Path | Description | Status |
 |--------|------|-------------|--------|
-| `GET` | `/api/health` | Health check — returns `{"status":"ok"}` if snapshot loaded | ⬜ planned |
-| `GET` | `/api/snapshots/latest` | Full snapshot JSON | ⬜ planned |
-| `POST` | `/api/snapshots` | Accept snapshot from remote collector | ⬜ planned |
-| `GET` | `/api/skills` | All skills, sorted by load count | ⬜ planned |
-| `GET` | `/api/skills/:name` | Single skill detail with per-session data | ⬜ planned |
-| `GET` | `/api/tools` | All tools, sorted by call count | ⬜ planned |
-| `GET` | `/api/tools/:name` | Single tool detail | ⬜ planned |
-| `GET` | `/api/sessions` | All sessions, newest first | ⬜ planned |
-| `GET` | `/api/sessions/:id` | Full session detail | ⬜ planned |
-| `POST` | `/api/refresh` | Trigger collector re-run, return fresh snapshot | ⬜ planned |
+| `GET` | `/api/health` | Health check — returns `{"status":"ok", "last_collection":"<ts>"}` if snapshot loaded, 503 otherwise | ✅ implemented |
+| `GET` | `/api/snapshots/latest` | Full snapshot JSON | ✅ implemented |
+| `POST` | `/api/snapshots` | Accept snapshot from remote collector, validate schema, return 201 | ✅ implemented |
+| `GET` | `/api/skills` | All skills, sorted by load count descending | ✅ implemented |
+| `GET` | `/api/skills/:name` | Single skill detail with per-session breakdown | ✅ implemented |
+| `GET` | `/api/tools` | All tools, sorted by call count descending | ✅ implemented |
+| `GET` | `/api/tools/:name` | Single tool detail with per-session call counts | ✅ implemented |
+| `GET` | `/api/sessions` | All sessions, newest first | ✅ implemented |
+| `GET` | `/api/sessions/:id` | Full session detail | ✅ implemented |
+| `POST` | `/api/refresh` | Trigger collector re-run, reload and return fresh snapshot | ✅ implemented |
 
 ### Quick start (API)
 
 ```bash
-pip install flask
+pip install -r requirements.txt
 python server.py                    # starts on port 5555
 curl localhost:5555/api/health      # health check
 ```
@@ -134,7 +134,7 @@ Grafana URL: `http://localhost:3000` (default credentials: admin/admin)
 | Component | File | Status |
 |-----------|------|--------|
 | Data collector | `collector.py` | ✅ implemented |
-| REST API server | `server.py` | ⬜ planned |
+| REST API server | `server.py` | ✅ implemented |
 | Grafana dashboards | `grafana/provisioning/` | ⬜ planned |
 | Installer | `install.sh` | ⬜ planned |
 | Test suite | `tests/` | ⬜ planned |

@@ -1,4 +1,8 @@
-## ADDED Requirements
+# Refresh Trigger
+
+**Purpose**: Expose an endpoint that re-runs the collector as a subprocess and returns fresh snapshot data on demand — enabling on-demand data refresh without restarting the server.
+
+## Requirements
 
 ### Requirement: Refresh endpoint triggers collector re-run
 
