@@ -41,3 +41,7 @@
 - [ ] 7.1 Add JSON content-type header to all responses (`application/json`)
 - [ ] 7.2 Add `pretty-print` query parameter support for indented JSON output (debug aid)
 - [ ] 7.3 Print startup banner: port number, snapshot status, endpoint list to stdout
+
+## 8. Documentation
+
+- [ ] 8.1 Update README.md: mark REST API as ✅ in project status table, update API reference table (remove ⬜ planned markers from implemented endpoints, add confirmed response examples), add `pip install -r requirements.txt && python server.py` quick-start if not present

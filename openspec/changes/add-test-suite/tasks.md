@@ -68,3 +68,4 @@
 - [ ] 6.2 Verify tests complete in under 1 second
 - [ ] 6.3 Verify no test touches the real `~/.hermes/` directory
 - [ ] 6.4 Add `python -m pytest tests/ -v` as the test command in README (future task, noted here)
+- [ ] 6.5 Update README.md: mark test suite as ✅ in project status table, add test quick-start (`python -m pytest tests/ -v`), document test coverage scope

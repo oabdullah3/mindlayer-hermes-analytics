@@ -54,3 +54,7 @@
 - [ ] 6.2 Verify datasource references match the names in datasource YAML files
 - [ ] 6.3 Verify dashboard UIDs are unique across all 4 dashboards
 - [ ] 6.4 Verify time range macros (`$__timeFilter`, `$__timeFrom`, `$__timeTo`) are used in all SQL queries
+
+## 7. Documentation
+
+- [ ] 7.1 Update README.md: mark Grafana dashboards as ✅ in project status table, update dashboard descriptions with actual panel counts, add `http://localhost:3000` access instructions if not present

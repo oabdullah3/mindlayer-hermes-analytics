@@ -41,3 +41,4 @@
 - [ ] 6.7 Include deployment scenarios table (from PLAN.md)
 - [ ] 6.8 Add Open Questions / Future Roadmap section
 - [ ] 6.9 Add file structure tree (from PLAN.md)
+- [ ] 6.10 Final README consistency pass: flip all remaining ⬜ planned markers to ✅, verify sections match actual implementation, ensure quick-start commands work end-to-end
