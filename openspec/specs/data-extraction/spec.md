@@ -1,4 +1,8 @@
-## ADDED Requirements
+# Data Extraction
+
+**Purpose**: Extract all raw data from the Hermes agent's `state.db` and agent logs — sessions, skill loads, tool calls, user messages, errors, and aggregate insights — forming the input for snapshot generation.
+
+## Requirements
 
 ### Requirement: Collector reads session list from state.db
 

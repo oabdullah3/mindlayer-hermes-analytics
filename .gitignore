@@ -54,3 +54,4 @@ Thumbs.db
 *.tmp
 archive/
 snapshot_latest.json
+.github/

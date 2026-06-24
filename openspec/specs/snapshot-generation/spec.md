@@ -1,4 +1,8 @@
-## ADDED Requirements
+# Snapshot Generation
+
+**Purpose**: Assemble all extracted data into a self-contained `snapshot_latest.json` file with a consistent schema — including per-session objects, a global insights aggregate, and an ISO 8601 UTC timestamp.
+
+## Requirements
 
 ### Requirement: Collector outputs a valid snapshot JSON file
 

@@ -1,4 +1,8 @@
-## ADDED Requirements
+# Remote Push
+
+**Purpose**: Enable the collector to push snapshots to a remote server via HTTP POST when `HERMES_ANALYTICS_REMOTE` is set — with graceful fallback to local file output when the remote is unreachable or the `requests` library is not installed.
+
+## Requirements
 
 ### Requirement: Collector supports remote push mode
 
