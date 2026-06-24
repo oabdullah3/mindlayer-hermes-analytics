@@ -1,0 +1,55 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# ── Testing ─────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+*.coverage
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# ── Hermes data (generated at runtime, never commit) ────────────────────────
+snapshot.json
+*.db
+*.db-journal
+*.db-wal
+logs/
+log_payloads/
+
+# Synthetic test hermes home (created by conftest.py fixture)
+.hermes-test/
+
+# ── Grafana (local install from installer script) ────────────────────────────
+grafana/
+grafana-*/
+*.tar.gz
+
+# ── IDE / Editor ────────────────────────────────────────────────────────────
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Misc ────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+archive/
