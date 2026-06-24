@@ -18,6 +18,12 @@ env/
 # ── Testing ─────────────────────────────────────────────────────────────────
 .pytest_cache/
 .coverage
+
+# ── Hermes Analytics ────────────────────────────────────────────────────────
+# Generated snapshot output
+snapshot_latest.json
+# Multi-user server data (ADR-0002)
+server_data/
 *.coverage
 htmlcov/
 coverage.xml
