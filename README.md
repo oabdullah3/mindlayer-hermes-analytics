@@ -57,7 +57,7 @@ Hermes Agent produces rich usage data (SQLite, JSONL logs, tool payloads) but no
 
 ## What the collector extracts
 
-The collector runs a 7-step pipeline against `~/.hermes/`:
+The collector runs an 8-step pipeline against `~/.hermes/`:
 
 | Step | What | Source |
 |------|------|--------|
@@ -65,11 +65,12 @@ The collector runs a 7-step pipeline against `~/.hermes/`:
 | 2. Skill loads | Every `skill_view`/`skill_manage` invocation with skill name and load timestamp | `state.db` → `messages` table |
 | 3. Preceding messages | The user message that triggered each skill load | `state.db` → `messages` (id − 1) |
 | 4. Tool calls | Aggregated per-tool counts per session | `state.db` → `messages` (role=tool) |
-| 5. Token estimation | `CEIL(content_chars / 4)` per skill (Hermes doesn't populate per-message tokens) | Tool response content |
-| 6. User messages | All user messages per session, truncated to 200 chars | `state.db` → `messages` (role=user) |
-| 7. Errors | `Tool terminal returned error` lines with session and duration | `logs/agent.log` |
+| 5. Shell commands | Every terminal command executed, with exit code, output (truncated to 500 chars), and success/failure status | `state.db` → `messages` (tool_calls JSON) |
+| 6. Token estimation | `CEIL(content_chars / 4)` per skill (Hermes doesn't populate per-message tokens) | Tool response content |
+| 7. User messages | All user messages per session, truncated to 200 chars | `state.db` → `messages` (role=user) |
+| 8. Errors | `Tool terminal returned error` lines with session and duration | `logs/agent.log` |
 
-Output: `snapshot_latest.json` — a self-contained JSON artifact with all sessions, skills, tools, errors, and global insights.
+Output: `snapshot_latest.json` — a self-contained JSON artifact with all sessions, skills, tools, shell commands, errors, and global insights (including aggregate command statistics).
 
 ### Quick start (collector only)
 
