@@ -352,6 +352,211 @@ def aggregate_tool_calls(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Step 4a: Shell Command Extraction (capture-shell-commands)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def extract_shell_commands(
+    conn: sqlite3.Connection, session_id: int
+) -> list[dict]:
+    """
+    For a given session, find all shell/terminal commands:
+      - Query assistant messages with tool_calls JSON
+      - Extract any tool call whose function.arguments contains a 'command' key
+      - Match with the tool response to get exit code and output
+      - Truncate output to 500 chars
+    """
+    commands: list[dict] = []
+
+    cursor = conn.execute(
+        """
+        SELECT id, tool_calls, timestamp
+        FROM messages
+        WHERE session_id = ?
+          AND role = 'assistant'
+          AND tool_calls IS NOT NULL
+        ORDER BY id ASC
+        """,
+        (session_id,),
+    )
+
+    for row in cursor:
+        tool_calls_raw = row["tool_calls"]
+        if not tool_calls_raw:
+            continue
+
+        try:
+            tool_calls = json.loads(tool_calls_raw)
+        except (json.JSONDecodeError, TypeError):
+            print(
+                f"WARNING: Malformed tool_calls JSON at message {row['id']} "
+                f"in session {session_id}",
+                file=sys.stderr,
+            )
+            continue
+
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            args_raw = fn.get("arguments", "")
+            if not args_raw:
+                continue
+
+            # Parse arguments — may be a JSON string
+            try:
+                args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            command = args.get("command")
+            if not command:
+                continue
+
+            call_id = tc.get("id")
+            tool_name = fn.get("name", "unknown")
+            timestamp = row["timestamp"]
+
+            # Fetch the linked tool response
+            exit_code = None
+            output = None
+
+            if call_id:
+                tool_row = conn.execute(
+                    """
+                    SELECT id, content
+                    FROM messages
+                    WHERE session_id = ?
+                      AND role = 'tool'
+                      AND tool_call_id = ?
+                    LIMIT 1
+                    """,
+                    (session_id, call_id),
+                ).fetchone()
+
+                if tool_row is not None:
+                    exit_code, output = _parse_shell_response(
+                        tool_row["content"], tool_row["id"], session_id
+                    )
+                else:
+                    print(
+                        f"WARNING: Orphaned shell command — assistant message "
+                        f"{row['id']} references tool_call_id={call_id} "
+                        f"with no matching tool response in session {session_id}",
+                        file=sys.stderr,
+                    )
+
+            # Truncate output
+            if output and len(output) > 500:
+                output = output[:497] + "… (truncated)"
+
+            # Determine success
+            success = exit_code == 0 if exit_code is not None else None
+
+            commands.append(
+                {
+                    "command": command,
+                    "tool_name": tool_name,
+                    "exit_code": exit_code,
+                    "output": output,
+                    "success": success,
+                    "timestamp": timestamp,
+                    "message_id": row["id"],
+                    "tool_call_id": call_id,
+                }
+            )
+
+    return commands
+
+
+def _parse_shell_response(
+    content: str | None, msg_id: int, session_id: int
+) -> tuple[int | None, str | None]:
+    """
+    Parse a shell tool response to extract (exit_code, output).
+
+    Formats handled:
+      1. JSON: {"output": "...", "stdout": "..."}
+      2. Bracketed text: [terminal] ran `CMD` -> exit N, ...
+      3. Duplicate: [Duplicate tool output — ...]
+      4. Cancelled: [Tool execution cancelled — ...]
+      5. Error: Error executing tool: ...
+      6. Missing tool: Tool 'X' does not exist. ...
+    """
+    if not content:
+        print(
+            f"WARNING: Empty content in shell tool response "
+            f"at message {msg_id} in session {session_id}",
+            file=sys.stderr,
+        )
+        return None, None
+
+    # ── Format 1: JSON ──────────────────────────────────────────
+    if content.startswith("{"):
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(content)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            out = parsed.get("output") or parsed.get("stdout") or ""
+            # JSON format doesn't carry exit code — default 0
+            return 0, out if out else None
+
+        # Fall through to plain-text parsing
+
+    # ── Format 2: Bracketed text [terminal] ran `CMD` -> exit N  ─
+    if content.startswith("[terminal]") or content.startswith("["):
+        # Use DOTALL — commands may embed newlines
+        match = re.match(
+            r"\[terminal\]\s+.*?->\s+exit\s+(\d+)", content, re.DOTALL
+        )
+        if match:
+            exit_code = int(match.group(1))
+            return exit_code, content
+
+        # ── Format 3: Duplicate ─────────────────────────────────
+        if content.startswith("[Duplicate"):
+            print(
+                f"INFO: Duplicate tool output at message {msg_id} "
+                f"in session {session_id} — skipping",
+                file=sys.stderr,
+            )
+            return -1, "[duplicate]"
+
+        # ── Format 4: Cancelled ──────────────────────────────────
+        if content.startswith("[Tool execution cancelled"):
+            print(
+                f"INFO: Tool execution cancelled at message {msg_id} "
+                f"in session {session_id}",
+                file=sys.stderr,
+            )
+            return -1, "[cancelled]"
+
+        # Bracketed but unrecognized — return as output with null exit
+        print(
+            f"WARNING: Unrecognized bracketed format in shell "
+            f"response at message {msg_id} in session {session_id}",
+            file=sys.stderr,
+        )
+        return None, content
+
+    # ── Format 5: Error executing tool ──────────────────────────
+    if content.startswith("Error executing tool:"):
+        return -1, content
+
+    # ── Format 6: Missing tool ──────────────────────────────────
+    if content.startswith("Tool '") and "does not exist" in content:
+        return -1, content
+
+    # ── Unknown format ──────────────────────────────────────────
+    print(
+        f"WARNING: Unknown content format in shell tool response "
+        f"at message {msg_id} in session {session_id}: "
+        f"{content[:100]}",
+        file=sys.stderr,
+    )
+    return None, content
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Step 5: Token Estimation (Tasks 6.1 – 6.2)
 # ──────────────────────────────────────────────────────────────────────────────
 # Token estimation is already computed during skill load detection
@@ -496,6 +701,11 @@ def compute_global_insights(sessions: list[dict]) -> dict:
     skills_agg: dict[str, dict] = {}
     # Accumulators: tool_name -> count
     tools_agg: dict[str, int] = {}
+    # Accumulators: command -> count (total / failed)
+    cmd_agg: dict[str, int] = {}
+    cmd_fail_agg: dict[str, int] = {}
+    total_commands = 0
+    failed_commands = 0
 
     for session in sessions:
         total_messages += session.get("message_count", 0)
@@ -518,6 +728,16 @@ def compute_global_insights(sessions: list[dict]) -> dict:
             name = tool.get("tool_name", "unknown")
             tools_agg[name] = tools_agg.get(name, 0) + tool.get("count", 0)
 
+        for cmd in session.get("shell_commands", []):
+            total_commands += 1
+            command = cmd.get("command", "")
+            if command:
+                cmd_agg[command] = cmd_agg.get(command, 0) + 1
+            if cmd.get("exit_code") not in (0, None):
+                failed_commands += 1
+                if command:
+                    cmd_fail_agg[command] = cmd_fail_agg.get(command, 0) + 1
+
     # Sort leaderboards by count descending
     skills_leaderboard = sorted(
         skills_agg.values(), key=lambda x: x["load_count"], reverse=True
@@ -527,6 +747,16 @@ def compute_global_insights(sessions: list[dict]) -> dict:
         key=lambda x: x["count"],
         reverse=True,
     )
+    most_executed = sorted(
+        ({"command": k, "count": v} for k, v in cmd_agg.items()),
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:20]
+    failed_list = sorted(
+        ({"command": k, "failure_count": v} for k, v in cmd_fail_agg.items()),
+        key=lambda x: x["failure_count"],
+        reverse=True,
+    )
 
     return {
         "total_sessions": total_sessions,
@@ -534,6 +764,12 @@ def compute_global_insights(sessions: list[dict]) -> dict:
         "total_skill_loads": total_skill_loads,
         "skills": skills_leaderboard,
         "tools": tools_leaderboard,
+        "commands": {
+            "total_commands": total_commands,
+            "failed_commands": failed_commands,
+            "most_executed_commands": most_executed,
+            "failed_commands_list": failed_list,
+        },
     }
 
 
@@ -646,6 +882,9 @@ def collect(hermes_home: str | None = None) -> dict:
             # Step 4: Tool call aggregation
             tools = aggregate_tool_calls(conn, sid)
 
+            # Step 4a: Shell command extraction
+            shell_cmds = extract_shell_commands(conn, sid)
+
             # Step 5: Token estimation (redundant pass for safety)
             validate_token_estimates(skills)
 
@@ -674,6 +913,7 @@ def collect(hermes_home: str | None = None) -> dict:
             }
             session["skills_loaded"] = skills
             session["tool_calls"] = tools
+            session["shell_commands"] = shell_cmds
             session["user_messages"] = user_msgs
             session["errors"] = errors
 
@@ -683,7 +923,7 @@ def collect(hermes_home: str | None = None) -> dict:
                     "session_id", "platform", "chat_name", "model",
                     "started_at", "ended_at", "ended_reason",
                     "tokens", "stats", "skills_loaded", "tool_calls",
-                    "user_messages", "errors",
+                    "shell_commands", "user_messages", "errors",
                 ):
                     del session[key]
 
