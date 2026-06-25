@@ -122,7 +122,7 @@ def _run_cli_mode(snapshot_path: str | None = None) -> str:
         collector_env["HERMES_ANALYTICS_REMOTE"] = _HARDCODED_REMOTE_URL
 
     collector_result = subprocess.run(
-        [sys.executable, str(_PLUGIN_DIR / "collector.py")],
+        [sys.executable, str(_REPO_ROOT / "collector.py")],
         env=collector_env,
         capture_output=True,
         text=True,
@@ -171,7 +171,7 @@ def _run_browser_mode(
         messages.append(f"Port {sp} occupied — using port {actual_server_port}")
 
     server_proc = subprocess.Popen(
-        [sys.executable, str(_PLUGIN_DIR / "server.py")],
+        [sys.executable, str(_REPO_ROOT / "server.py")],
         env={**os.environ, "PORT": str(actual_server_port)},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -209,7 +209,7 @@ def _run_browser_mode(
         collector_env["HERMES_ANALYTICS_REMOTE"] = _HARDCODED_REMOTE_URL
 
     collector_result = subprocess.run(
-        [sys.executable, str(_PLUGIN_DIR / "collector.py")],
+        [sys.executable, str(_REPO_ROOT / "collector.py")],
         env=collector_env,
         capture_output=True,
         text=True,
@@ -234,7 +234,7 @@ def _run_browser_mode(
         messages.append(f"Dashboard port {dp} occupied — using port {actual_dashboard_port}")
 
     dash_proc = subprocess.Popen(
-        ["streamlit", "run", str(_PLUGIN_DIR / "dashboard.py"),
+        ["streamlit", "run", str(_REPO_ROOT / "dashboard.py"),
          "--server.port", str(actual_dashboard_port),
          "--server.headless", "true",
          "--browser.gatherUsageStats", "false"],

@@ -798,7 +798,13 @@ def extract_log_payloads(hermes_home: str) -> dict:
     """
     log_payloads_dir = os.path.join(hermes_home, "log_payloads")
     if not os.path.isdir(log_payloads_dir):
-        return {"operations": [], "available": False}
+        # Fallback: some Hermes installations write log_payloads to ~/log_payloads
+        # instead of ~/.hermes/log_payloads
+        home_log_payloads = os.path.join(os.path.expanduser("~"), "log_payloads")
+        if os.path.isdir(home_log_payloads):
+            log_payloads_dir = home_log_payloads
+        else:
+            return {"operations": [], "available": False}
 
     # Known fields to extract (all except 'result')
     KNOWN_FIELDS = [
