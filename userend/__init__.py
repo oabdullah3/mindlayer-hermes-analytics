@@ -1,10 +1,8 @@
-"""Hermes Analytics Plugin — registration, slash command, and CLI command.
+"""Hermes Analytics Plugin — registration + slash command handler.
 
-Registers /hermes-snapshot-analytics in Hermes chat sessions and
-hermes snapshot-analytics as a standalone CLI subcommand.
-
-Both start a local Flask server, run the collector, launch a local
-Streamlit dashboard, and return the URL.
+Registers /hermes-snapshot-analytics in Hermes chat sessions.
+The handler starts a local Flask server, runs the collector,
+launches a local Streamlit dashboard, and returns the URL.
 """
 
 import json
@@ -19,7 +17,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _PLUGIN_DIR = Path(__file__).parent
-_REPO_ROOT = _PLUGIN_DIR  # now at repo root, both are the same
+_REPO_ROOT = _PLUGIN_DIR.parent
 
 # PID file paths
 _SERVER_PID_FILE = "/tmp/hermes-analytics-server.pid"
@@ -58,15 +56,16 @@ def _find_free_port(start: int) -> int:
 
 
 def _wait_for_health(url: str, timeout: float = 5.0) -> bool:
-    """Poll /api/health until the server responds (any status = alive)."""
+    """Poll /api/health until it returns 200 or timeout expires."""
     import urllib.request
     import urllib.error
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             req = urllib.request.Request(url, method="GET")
-            urllib.request.urlopen(req, timeout=1)
-            return True  # any response means the server is alive
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                if resp.status == 200:
+                    return True
         except (urllib.error.URLError, OSError):
             pass
         time.sleep(0.3)
@@ -107,96 +106,6 @@ def _resolve_username() -> str:
 # ──────────────────────────────────────────────────────────────────────
 # Slash command handler
 # ──────────────────────────────────────────────────────────────────────
-
-def _ensure_dependencies() -> str | None:
-    """Auto-install missing Python packages into the running environment.
-
-    Hermes plugins run in a venv or managed Python that may not have pip
-    bootstrapped.  We handle four scenarios:
-
-    1. Dependencies already importable → no-op
-    2. pip missing from the interpreter → bootstrap via ensurepip (stdlib)
-    3. PEP 668 externally-managed-environment → retry with --break-system-packages
-    4. Everything else → report the error with a manual fallback
-    """
-    required = ("flask", "streamlit", "plotly")
-    missing = [p for p in required]
-    for pkg in required:
-        try:
-            __import__(pkg)
-            missing.remove(pkg)
-        except ImportError:
-            pass
-    if not missing:
-        return None
-
-    logger.info("Auto-installing missing dependencies: %s", missing)
-    reqs_path = _PLUGIN_DIR / "requirements.txt"
-
-    def _run_pip(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
-        cmd = [sys.executable, "-m", "pip"] + args
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-    # ── Step 0: bootstrap pip if the interpreter is missing it ──
-    # Hermes may ship a venv without pip.  ensurepip is always present (3.4+).
-    have_pip = False
-    try:
-        check = _run_pip(["--version"], timeout=10)
-        have_pip = check.returncode == 0
-    except Exception:
-        pass
-
-    if not have_pip:
-        logger.info("pip not available — bootstrapping via ensurepip")
-        bootstrap = subprocess.run(
-            [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if bootstrap.returncode != 0:
-            tail = bootstrap.stderr.strip().split("\n")[-5:]
-            return (
-                "❌ Could not bootstrap pip in the Hermes Python environment.\n\n"
-                "```\n" + "\n".join(tail) + "\n```\n\n"
-                f"Try manually:\n```bash\n"
-                f"cd {_PLUGIN_DIR}\n"
-                f"{sys.executable} -m ensurepip --upgrade\n"
-                f"{sys.executable} -m pip install -r requirements.txt\n```"
-            )
-
-    # ── Step 1: install ──
-    result = _run_pip(["install", "-r", str(reqs_path)])
-    if result.returncode != 0 and "externally-managed" in result.stderr:
-        logger.info("PEP 668 detected — retrying with --break-system-packages")
-        result = _run_pip(["install", "--break-system-packages", "-r", str(reqs_path)])
-
-    if result.returncode != 0:
-        stderr_tail = result.stderr.strip().split("\n")[-5:]
-        return (
-            "❌ Auto-install of dependencies failed.\n\n"
-            "```\n" + "\n".join(stderr_tail) + "\n```\n\n"
-            f"Try manually:\n```bash\n"
-            f"cd {_PLUGIN_DIR}\n"
-            f"{sys.executable} -m pip install -r requirements.txt\n```"
-        )
-
-    # ── Step 2: verify ──
-    still_missing = []
-    for pkg in missing:
-        try:
-            __import__(pkg)
-        except ImportError:
-            still_missing.append(pkg)
-    if still_missing:
-        return (
-            f"❌ pip install succeeded but import still fails: {', '.join(still_missing)}\n\n"
-            f"Try manually:\n```bash\n"
-            f"cd {_PLUGIN_DIR}\n"
-            f"{sys.executable} -m pip install -r requirements.txt\n```"
-        )
-
-    logger.info("Auto-install complete — %s are ready", ", ".join(missing))
-    return None
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Mode: CLI output (printed to stdout, no browser)
@@ -282,10 +191,7 @@ def _run_browser_mode(
             stdout_out = server_proc.stdout.read().decode("utf-8", errors="replace").strip() if server_proc.stdout else ""
             error_detail = stderr_out or stdout_out or f"exit code {exit_code}"
             _kill_from_pid_file(_SERVER_PID_FILE)
-            hint = ""
-            if "ModuleNotFoundError" in error_detail or "ImportError" in error_detail:
-                hint = f"\n\nRun the installer:\n```bash\ncd {_PLUGIN_DIR} && ./install.sh\n```"
-            return f"❌ Analytics server crashed on startup:\n```\n{error_detail[:500]}\n```{hint}", messages
+            return f"❌ Analytics server crashed on startup:\n```\n{error_detail[:500]}\n```", messages
         _kill_from_pid_file(_SERVER_PID_FILE)
         return (
             f"❌ Analytics server failed to start within 10 seconds.\n"
@@ -372,11 +278,6 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
     Supports --mode (cli|browser|both, default: cli) and --fallback.
     """
-    # ── 0. Dependency check ──
-    dep_err = _ensure_dependencies()
-    if dep_err:
-        return dep_err
-
     # Parse args
     mode = "cli"           # default: CLI (agent can't see browser)
     fallback = False
@@ -413,7 +314,7 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
                     return err
                 return _format_browser_response(msgs)
             return result
-        return "✅ CLI metrics printed above."  # success sentinel for slash command
+        return "✅ CLI metrics printed above."
 
     elif mode == "browser":
         err, msgs = _run_browser_mode(server_port, dashboard_port)
@@ -432,14 +333,9 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
         return _format_browser_response(msgs)
 
     elif mode == "both":
-        # Run CLI first
         cli_err = _run_cli_mode()
-        # Then browser
         err, msgs = _run_browser_mode(server_port, dashboard_port)
         if err:
-            if fallback:
-                # CLI already ran, just show browser error
-                return f"CLI output shown above.\n\nBrowser mode failed:\n{err}"
             return f"CLI output shown above.\n\nBrowser mode failed:\n{err}"
         browser_resp = _format_browser_response(msgs)
         if cli_err:
@@ -451,9 +347,8 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
 def _format_browser_response(msgs: list[str]) -> str:
     """Build a friendly response string from _run_browser_mode output."""
-    dashboard_url = msgs[-1] if msgs and msgs[-1].startswith("http") else ""
-    notices = [m for m in msgs[:-1] if m]
     url = msgs[-1] if msgs and msgs[-1].startswith("http") else ""
+    notices = [m for m in msgs[:-1] if m]
 
     lines = [
         "✅ **Hermes Analytics is ready!**",
@@ -471,68 +366,17 @@ def _format_browser_response(msgs: list[str]) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# CLI command: hermes snapshot-analytics
-# ──────────────────────────────────────────────────────────────────────
-
-def _cli_handler(args):
-    """Handler for `hermes snapshot-analytics` — adapt argparse → slash handler."""
-    raw_args_parts = []
-    for attr in ("server_port", "dashboard_port"):
-        val = getattr(args, attr, None)
-        if val:
-            raw_args_parts.append(f"--{attr.replace('_', '-')}={val}")
-    if getattr(args, "mode", None):
-        raw_args_parts.append(f"--mode={args.mode}")
-    if getattr(args, "fallback", False):
-        raw_args_parts.append("--fallback")
-    raw_args = " ".join(raw_args_parts)
-
-    result = _handle_snapshot_analytics(raw_args)
-    # Strip markdown formatting for clean terminal output
-    for char in ("*", "`", "#"):
-        result = result.replace(char, "")
-    print(result)
-
-
-def _setup_argparse(subparser):
-    """Build the argparse tree for `hermes snapshot-analytics`."""
-    subparser.add_argument(
-        "--mode", type=str, default="cli",
-        choices=["cli", "browser", "both"],
-        help="Output mode: cli (terminal), browser (Streamlit), or both (default: cli)",
-    )
-    subparser.add_argument(
-        "--fallback", action="store_true", default=False,
-        help="If the chosen mode fails, automatically try the other mode",
-    )
-    subparser.add_argument(
-        "--server-port", type=int, default=None,
-        help=f"Port for the local analytics server (default: {_DEFAULT_SERVER_PORT})",
-    )
-    subparser.add_argument(
-        "--dashboard-port", type=int, default=None,
-        help=f"Port for the Streamlit dashboard (default: {_DEFAULT_DASHBOARD_PORT})",
-    )
-    subparser.set_defaults(func=_cli_handler)
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Plugin registration
 # ──────────────────────────────────────────────────────────────────────
 
 def register(ctx):
-    """Register the slash command and CLI subcommand."""
+    """Register the /hermes-snapshot-analytics slash command."""
+    from . import schemas
+
     ctx.register_command(
         "hermes-snapshot-analytics",
         handler=_handle_snapshot_analytics,
         description="Start Hermes Analytics: collect snapshot, print metrics",
-    )
-
-    ctx.register_cli_command(
-        name="snapshot-analytics",
-        help="Start Hermes Analytics (default: CLI output)",
-        setup_fn=_setup_argparse,
-        handler_fn=_cli_handler,
     )
 
     logger.info("Hermes Analytics plugin registered — /hermes-snapshot-analytics available")
