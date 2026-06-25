@@ -4,11 +4,11 @@
 
 ### Why
 
-Hermes Agent produces rich usage data (SQLite, JSONL logs, tool payloads) but nothing aggregates or visualizes it. Hermes Analytics reads that data, enriches it, and serves it through Grafana dashboards — zero modifications to Hermes itself.
+Hermes Agent produces rich usage data (SQLite, JSONL logs, tool payloads) but nothing aggregates or visualizes it. Hermes Analytics reads that data, enriches it, and serves it through a REST API and Streamlit dashboards — zero modifications to Hermes itself.
 
 **Key selling points:**
 - 🔌 **Zero Hermes modifications** — purely external consumer
-- 📊 **Grafana-powered dashboards** — industry-standard telemetry frontend
+- 🐍 **Pure Python** — no external services, no Docker required
 - 🌐 **Remote-deployable** — single-user local, or multi-user team dashboard
 - ⚡ **One-command setup** — `./install.sh` brings up everything
 
@@ -37,11 +37,12 @@ Hermes Agent produces rich usage data (SQLite, JSONL logs, tool payloads) but no
 │       │  GET /api/snapshots/latest                               │
 │       ▼                                                          │
 │  ┌───────────────────────────────────────────────────────────┐   │
-│  │ Grafana (localhost:3000)                                   │   │
+│  │ Streamlit Dashboard (dashboard.py)                         │   │
 │  │                                                             │   │
-│  │ Dashboards:                                                 │   │
-│  │   ⭐ Skills Analytics    ⭐ Tools Analytics                  │   │
-│  │   📋 Session Overview    🔍 Session Detail                  │   │
+│  │ Pages:                                                      │   │
+│  │   🏠 Portal Home      📋 Session Overview                   │   │
+│  │   ⭐ Skills Analytics  🔧 Tools Analytics                   │   │
+│  │   🔍 Session Detail                                         │   │
 │  └───────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -50,7 +51,7 @@ Hermes Agent produces rich usage data (SQLite, JSONL logs, tool payloads) but no
 
 | Mode | Description | Network |
 |------|-------------|---------|
-| **A — Local** | Everything on one machine. Collector writes local JSON, server reads it, Grafana queries the API. | None needed |
+| **A — Local** | Everything on one machine. Collector writes local JSON, server reads it, dashboard queries the API. | None needed |
 | **B — Remote** | Multiple users push snapshots to a shared server. Set `HERMES_ANALYTICS_REMOTE=https://dash.example.com` per machine. | HTTPS |
 
 ---
@@ -70,7 +71,7 @@ The collector runs an 8-step pipeline against `~/.hermes/`:
 | 7. User messages | All user messages per session, truncated to 200 chars | `state.db` → `messages` (role=user) |
 | 8. Errors | `Tool terminal returned error` lines with session and duration | `logs/agent.log` |
 
-Output: `snapshot_latest.json` — a self-contained JSON artifact with all sessions, skills, tools, shell commands, errors, and global insights (including aggregate command statistics).
+Output: `snapshot_latest.json` — a self-contained JSON artifact with all sessions, skills, tools, shell commands, errors, and global insights.
 
 ### Quick start (collector only)
 
@@ -114,18 +115,24 @@ curl localhost:5555/api/health      # health check
 
 ---
 
-## Dashboards (Grafana)
+## Dashboards (Streamlit)
 
-Four provisioned dashboards — no UI clicking to set up:
+Five dashboard pages served by `dashboard.py`, read from the REST API:
 
-| Dashboard | Panels | Source |
-|-----------|--------|--------|
-| ⭐ **Skills Analytics** | Leaderboard, timeline, token cost table, histogram, weekly trend, auto-vs-manual pie | Infinity (REST API) |
-| ⭐ **Tools Analytics** | Leaderboard, timeline, duration table, error stat, co-occurrence heatmap, terminal breakdown | Infinity (REST API) |
-| **Session Overview** | Session count, token/cost time series, session table, platform pie, model bar gauge | Infinity (REST API) |
-| **Session Detail** | Session header, token breakdown, skills loaded table, tool calls bar chart, user messages, errors panel | Infinity (REST API) |
+| Page | Content | Status |
+|------|---------|--------|
+| 🏠 **Portal Home** | Cross-domain summary, sidebar navigation | ⬜ planned |
+| 📋 **Session Overview** | Session count, token/cost stats, session table, filtering | ⬜ planned |
+| 🔍 **Session Detail** | Per-session breakdown: skills, tools, shell commands, errors, messages | ⬜ planned |
+| ⭐ **Skills Analytics** | Ranking table, bar chart, token distribution, timeline, preceding messages | ⬜ planned |
+| 🔧 **Tools Analytics** | Ranking table, call distribution, timeline | ⬜ planned |
 
-Grafana URL: `http://localhost:3000` (default credentials: admin/admin)
+### Quick start (dashboard)
+
+```bash
+pip install -r requirements.txt
+streamlit run dashboard.py          # starts on http://localhost:8501
+```
 
 ---
 
@@ -135,7 +142,7 @@ Grafana URL: `http://localhost:3000` (default credentials: admin/admin)
 |-----------|------|--------|
 | Data collector | `collector.py` | ✅ implemented |
 | REST API server | `server.py` | ✅ implemented |
-| Grafana dashboards | `grafana/provisioning/` | ⬜ planned |
+| Streamlit dashboards | `dashboard.py` | ⬜ planned |
 | Installer | `install.sh` | ⬜ planned |
 | Test suite | `tests/` | ⬜ planned |
 | README | `README.md` | ✅ you're reading it |
@@ -144,8 +151,8 @@ Grafana URL: `http://localhost:3000` (default credentials: admin/admin)
 
 ## Deployment scenarios
 
-| Scenario | Collector | Server | Grafana | Users |
-|----------|-----------|--------|---------|-------|
+| Scenario | Collector | Server | Dashboard | Users |
+|----------|-----------|--------|-----------|-------|
 | **Dev / single user** | Same machine | Same machine | Same machine | 1 |
 | **Team dashboard** | Each user's machine → push | Shared VPS | Shared VPS | 2–20 |
 | **Cloud dashboard** | Each user's machine → push | Cloud VM (fly.io, Railway) | Cloud VM | 2–100+ |
@@ -165,14 +172,15 @@ Grafana URL: `http://localhost:3000` (default credentials: admin/admin)
 
 ## Roadmap / Open questions
 
-- [ ] REST API server (`server.py`) — next up
-- [ ] Grafana dashboards (4 provisioned JSON dashboards)
+- [ ] Streamlit dashboards (`dashboard.py`) — 5 interactive pages
+- [ ] Multi-user server (flat-file persistence per ADR-0002)
+- [ ] `userend/` client restructuring (slash commands, config per ADR-0001)
 - [ ] `install.sh` — one-command setup
 - [ ] Test suite (pytest with synthetic fixtures)
+- [ ] Log payloads analytics (Step 9 in collector)
 - [ ] Per-message token counts (blocked: Hermes doesn't populate this column)
 - [ ] Auto-load vs. manual skill detection (blocked: Hermes doesn't expose this distinction)
 - [ ] Incremental collection (only new sessions since last run)
-- [ ] Multi-tenancy support for team dashboards
 
 ---
 

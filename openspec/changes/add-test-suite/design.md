@@ -22,7 +22,7 @@ Constraints:
 **Non-Goals:**
 - Testing with a real Hermes installation (that's integration testing, not unit testing)
 - Performance/load testing
-- Testing Grafana dashboard rendering (visual tests — out of scope)
+- Dashboard rendering tests (visual tests — out of scope)
 - Mocking the entire Hermes ecosystem — we test against real SQLite, real collector code
 - 100% code coverage — focus on critical paths and edge cases
 

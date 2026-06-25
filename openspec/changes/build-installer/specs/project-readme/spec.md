@@ -2,7 +2,7 @@
 
 ### Requirement: README includes project overview
 
-The README SHALL include a project title, one-line description ("External analytics dashboard for Hermes Agent — track skill usage, tool calls, and session costs"), and key selling points (zero Hermes modifications, Grafana-powered, remote-deployable).
+The README SHALL include a project title, one-line description ("External analytics dashboard for Hermes Agent — track skill usage, tool calls, and session costs"), and key selling points (zero Hermes modifications, pure Python, remote-deployable).
 
 #### Scenario: Reader lands on repo
 
@@ -11,7 +11,7 @@ The README SHALL include a project title, one-line description ("External analyt
 
 ### Requirement: README includes ASCII architecture diagram
 
-The README SHALL include an ASCII architecture diagram showing the data flow: Hermes files → collector → snapshot → REST API → Grafana dashboards, with Mode A (local) and Mode B (remote) labeled.
+The README SHALL include an ASCII architecture diagram showing the data flow: Hermes files → collector → snapshot → REST API → Streamlit dashboards, with Mode A (local) and Mode B (remote) labeled.
 
 #### Scenario: Understanding the system
 
@@ -21,7 +21,7 @@ The README SHALL include an ASCII architecture diagram showing the data flow: He
 ### Requirement: README includes installation instructions
 
 The README SHALL document both setup modes:
-- **Local (Mode A):** clone → `./install.sh` → `python server.py &` → `./grafana-server` → open localhost:3000
+- **Local (Mode A):** clone → `./install.sh` → `python server.py &` → `streamlit run dashboard.py` → open localhost:8501
 - **Remote (Mode B):** steps for remote server setup + per-machine collector config with `HERMES_ANALYTICS_REMOTE`
 
 #### Scenario: New user setting up the project
@@ -38,14 +38,14 @@ The README SHALL list all REST API endpoints with method, path, description, and
 - **WHEN** someone needs to query analytics programmatically
 - **THEN** the API reference provides all endpoints and their response shapes
 
-### Requirement: README documents all 4 dashboards
+### Requirement: README documents all dashboards
 
-The README SHALL describe each of the 4 dashboards with their purpose and a list of panels, marking the two primary USP dashboards (skills, tools) with ⭐.
+The README SHALL describe each dashboard page with its purpose, marking the two primary USP dashboards (skills, tools) with ⭐.
 
 #### Scenario: User exploring available dashboards
 
-- **WHEN** Grafana is running and dashboards are provisioned
-- **THEN** the README tells the user what each dashboard shows
+- **WHEN** the Streamlit dashboard is running
+- **THEN** the README tells the user what each page shows
 
 ### Requirement: README includes deployment scenarios table
 

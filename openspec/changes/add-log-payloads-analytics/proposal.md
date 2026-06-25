@@ -7,7 +7,7 @@ Hermes Analytics currently captures session-level metadata (skills, tools, shell
 - **New collector step** (Step 9): reads all `~/.hermes/log_payloads/YYYY-MM-DD/*.json` files, parses their common schema, and aggregates command-level statistics
 - **New snapshot fields**: `log_payloads` section in `snapshot_latest.json` with per-command records and global aggregates (operation type breakdown, duration stats, top pages, top search queries, workflow pipeline tracking)
 - **New Streamlit dashboard page**: "Confluence Audit" dashboard with operation leaderboard, duration distribution, page interaction heatmap, workflow pipeline Sankey/bar (prepare → show-changes → finalize), daily usage timeline, and search query frequency table
-- **requirements.txt update**: add `streamlit` and `plotly` (already planned for the overarching Streamlit dashboard migration replacing Grafana)
+- **requirements.txt update**: add `streamlit` and `plotly` (already planned for the Streamlit dashboard change)
 
 ## Capabilities
 
