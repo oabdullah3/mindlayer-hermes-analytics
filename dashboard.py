@@ -1086,26 +1086,26 @@ def _fmt_ts(ts_str: str | None) -> str:
         return ts_str[:19] if len(ts_str) >= 19 else str(ts_str)
 
 
-def _parse_date_hour(ts_str: str | None) -> tuple[str, str]:
-    """Parse ISO timestamp into (date_str, hour_str) like '2026-06-18', '14:00'."""
+def _parse_date_hour(ts_str: str | None) -> str:
+    """Parse ISO timestamp into 'YYYY-MM-DD HH:00' bucket key."""
     if not ts_str:
-        return ("unknown", "00:00")
+        return "unknown 00:00"
     try:
         s = ts_str.replace("Z", "+00:00").replace(" ", "T")
         dt = datetime.fromisoformat(s)
-        return (dt.strftime("%Y-%m-%d"), dt.strftime("%H:00"))
+        return dt.strftime("%Y-%m-%d %H:00")
     except Exception:
-        return ("unknown", "00:00")
+        return "unknown 00:00"
 
 
 def _parse_date(ts_str: str | None) -> str:
     """Extract YYYY-MM-DD from ISO timestamp."""
-    d, _ = _parse_date_hour(ts_str)
-    return d
+    d = _parse_date_hour(ts_str)
+    return d[:10] if len(d) >= 10 else d
 
 
 def _parse_week(ts_str: str | None) -> str:
-    """Extract ISO week label like '2026-W25'."""
+    """Extract ISO week label like '2026-W25' (matching telemetry server getIsoWeek)."""
     if not ts_str:
         return "unknown"
     try:
@@ -1196,6 +1196,49 @@ def _compute_entity_rollup(operations: list[dict]) -> list[dict]:
     return entities
 
 
+def _trunc(s: str, max_len: int = 35) -> str:
+    """Truncate a string for display in charts."""
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + "…"
+
+
+def _format_window_label(window_key: str, view: str) -> str:
+    """Format window key for display (matching telemetry server formatWindowLabel).
+    
+    Hourly → "MM/DD/YYYY", Daily → "Mon YYYY", else → window_key.
+    """
+    if view == "Hourly":
+        parts = window_key.split("-")
+        if len(parts) == 3:
+            return f"{parts[1]}/{parts[2]}/{parts[0]}"
+        return window_key
+    if view == "Daily":
+        parts = window_key.split("-")
+        if len(parts) == 2:
+            months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            m_idx = int(parts[1]) - 1
+            if 0 <= m_idx < 12:
+                return f"{months[m_idx]} {parts[0]}"
+        return window_key
+    return window_key
+
+
+def _get_stable_colors(labels: list[str]) -> list[str]:
+    """Generate stable colors for a list of tool/command labels.
+    
+    Uses golden ratio with hash seeding so the same label always gets the same color.
+    """
+    phi_inv = 0.618033988749895
+    colors = []
+    for label in labels:
+        h = hash(label.lower()) % 360
+        hue = (abs(h) * phi_inv * 360) % 360
+        colors.append(f"hsl({hue:.0f}, 70%, 55%)")
+    return colors
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Page: Mindlayer Skills (adapted from skills-telemetry-server dashboard)
 # ──────────────────────────────────────────────────────────────────────
@@ -1232,6 +1275,7 @@ def page_mindlayer_skills():
                 selected_tool = "All"
                 selected_command = "All"
                 selected_status = "All"
+                st.rerun()
 
     # Apply filters
     filtered = operations
@@ -1246,7 +1290,7 @@ def page_mindlayer_skills():
         st.warning("No operations match the selected filters.", icon="⚠️")
         return
 
-    # ── Entity rollup ──
+    # ── Entity rollup (for KPIs + feed) ──
     entities = _compute_entity_rollup(filtered)
     total_executions = len(entities)
 
@@ -1261,35 +1305,36 @@ def page_mindlayer_skills():
     }
     STATUS_ORDER = ["success", "abandoned", "incomplete", "failure", "failed", "unknown"]
 
-    # ── KPI Row ───────────────────────────────────────────────────────
+    # ── Row 1: KPI + Status Breakdown (full width) ────────────────────
     st.markdown("### Metrics Dashboard")
 
-    kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+    total_for_bar = max(1, sum(status_counts.values()))
+    bar_html = '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;width:100%;background:#e2e8f0;margin-top:4px;">'
+    for s in STATUS_ORDER:
+        if s in status_counts:
+            pct = status_counts[s] / total_for_bar * 100
+            color = STATUS_COLORS.get(s, "#94a3b8")
+            bar_html += f'<div style="width:{pct:.1f}%;background:{color};" title="{s}: {status_counts[s]} ({pct:.0f}%)"></div>'
+    bar_html += '</div>'
+    st.metric("Total Executions", total_executions)
+    st.html(bar_html)
+    # Legend
+    legend_parts = []
+    for s in STATUS_ORDER:
+        if s in status_counts:
+            pct = status_counts[s] / total_for_bar * 100
+            color = STATUS_COLORS.get(s, "#94a3b8")
+            legend_parts.append(
+                f'<span style="color:{color};font-weight:600;font-size:0.80rem;">{pct:.0f}% {s.title()}</span>'
+            )
+    st.html('<div style="margin-top:6px;display:flex;gap:16px;flex-wrap:wrap;">' + " ".join(legend_parts) + '</div>')
 
-    with kpi_col1:
-        st.metric("Total Executions", total_executions)
-        # Status breakdown bar
-        if status_counts:
-            total_for_bar = sum(status_counts.values())
-            bar_html = '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;width:100%;background:#e2e8f0;margin-top:4px;">'
-            for s in STATUS_ORDER:
-                if s in status_counts:
-                    pct = status_counts[s] / total_for_bar * 100
-                    color = STATUS_COLORS.get(s, "#94a3b8")
-                    bar_html += f'<div style="width:{pct:.1f}%;background:{color};" title="{s}: {status_counts[s]}"></div>'
-            bar_html += '</div>'
-            st.html(bar_html)
-            # Legend
-            legend_parts = []
-            for s in STATUS_ORDER:
-                if s in status_counts:
-                    color = STATUS_COLORS.get(s, "#94a3b8")
-                    legend_parts.append(
-                        f'<span style="color:{color};font-weight:600;font-size:0.75rem;">● {s} ({status_counts[s]})</span>'
-                    )
-            st.html('<div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">' + " ".join(legend_parts) + '</div>')
+    # ── Row 2: Tool Time Usage (doughnut) + Top Commands by Time (bar) ──
+    st.divider()
+    c1, c2 = st.columns(2)
 
-    with kpi_col2:
+    # Left: Doughnut — Tool Time Usage
+    with c1:
         st.subheader("Tool Time Usage")
         tool_time: dict[str, float] = {}
         for e in entities:
@@ -1297,20 +1342,27 @@ def page_mindlayer_skills():
             tool_time[tn] = tool_time.get(tn, 0) + e["total_duration_ms"]
         if tool_time:
             items = sorted(tool_time.items(), key=lambda x: x[1], reverse=True)
-            labels = [k for k, _ in items]
+            labels = [_trunc(k) for k, _ in items]
             values = [v for _, v in items]
-            fig = px.bar(
-                x=values, y=labels, orientation="h",
-                labels={"x": "Duration (ms)", "y": "Tool"},
-                color_discrete_sequence=["#8b5cf6"],
-            )
+            colors = _get_stable_colors([k for k, _ in items])
+            fig = go.Figure(go.Pie(
+                labels=labels, values=values, hole=0.5,
+                marker=dict(colors=colors),
+                textinfo="label+percent",
+                hovertemplate="<b>%{label}</b><br>%{value:,.0f}ms<br>%{percent}<extra></extra>",
+            ))
             fig.update_layout(
-                bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=max(200, len(items) * 24),
-                yaxis=dict(autorange="reversed"),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=350,
+                legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02,
+                           font=dict(size=10)),
             )
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No data")
 
-    with kpi_col3:
+    # Right: Horizontal Bar — Top Commands by Time
+    with c2:
         st.subheader("Top Commands by Time")
         cmd_time: dict[str, float] = {}
         for e in entities:
@@ -1318,113 +1370,175 @@ def page_mindlayer_skills():
             cmd_time[cn] = cmd_time.get(cn, 0) + e["total_duration_ms"]
         if cmd_time:
             items = sorted(cmd_time.items(), key=lambda x: x[1], reverse=True)[:10]
-            labels = [k for k, _ in items]
-            values = [v for _, v in items]
-            fig = px.bar(
+            labels = [_trunc(k) for k, _ in items]
+            values = [v / 1000 for _, v in items]  # convert ms → s for axis
+            colors = _get_stable_colors([k for k, _ in items])
+            fig = go.Figure(go.Bar(
                 x=values, y=labels, orientation="h",
-                labels={"x": "Duration (ms)", "y": "Command"},
-                color_discrete_sequence=["#0ea5e9"],
-            )
+                marker_color=colors,
+                hovertemplate="<b>%{y}</b><br>%{x:,.1f}s<extra></extra>",
+            ))
             fig.update_layout(
-                bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=250,
+                bargap=0.15,
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=350,
+                xaxis_title="Total Time (seconds)",
                 yaxis=dict(autorange="reversed"),
             )
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No data")
 
-    # ── Activity Timeline ─────────────────────────────────────────────
+    # ── Row 3: Activity Timeline ──────────────────────────────────────
     st.divider()
     st.markdown("### Activity Timeline")
 
-    tl_col1, tl_col2, tl_col3 = st.columns([1, 1, 2])
-    with tl_col1:
+    # Session state for timeline windowing
+    if "ml_timeline_view" not in st.session_state:
+        st.session_state.ml_timeline_view = "Daily"
+    if "ml_timeline_window_idx" not in st.session_state:
+        st.session_state.ml_timeline_window_idx = -1  # -1 means "latest"
+
+    view = st.session_state.ml_timeline_view
+
+    # Resolution buttons (mimic telemetry server)
+    res_col, group_col, _ = st.columns([2, 1, 2])
+    with res_col:
+        btn_h, btn_d, btn_w, btn_m = st.columns(4)
+        hourly_style = "primary" if view == "Hourly" else "secondary"
+        daily_style = "primary" if view == "Daily" else "secondary"
+        weekly_style = "primary" if view == "Weekly" else "secondary"
+        monthly_style = "primary" if view == "Monthly" else "secondary"
+        with btn_h:
+            if st.button("Hourly", key="ml_tl_hourly", type=hourly_style, use_container_width=True):
+                st.session_state.ml_timeline_view = "Hourly"
+                st.session_state.ml_timeline_window_idx = -1
+                st.rerun()
+        with btn_d:
+            if st.button("Daily", key="ml_tl_daily", type=daily_style, use_container_width=True):
+                st.session_state.ml_timeline_view = "Daily"
+                st.session_state.ml_timeline_window_idx = -1
+                st.rerun()
+        with btn_w:
+            if st.button("Weekly", key="ml_tl_weekly", type=weekly_style, use_container_width=True):
+                st.session_state.ml_timeline_view = "Weekly"
+                st.session_state.ml_timeline_window_idx = -1
+                st.rerun()
+        with btn_m:
+            if st.button("Monthly", key="ml_tl_monthly", type=monthly_style, use_container_width=True):
+                st.session_state.ml_timeline_view = "Monthly"
+                st.session_state.ml_timeline_window_idx = -1
+                st.rerun()
+
+    with group_col:
         timeline_grouping = st.selectbox(
             "Group By", ["Tool", "Command"], key="ml_timeline_group"
         )
-    with tl_col2:
-        timeline_view = st.selectbox(
-            "Resolution", ["Hourly", "Daily", "Weekly", "Monthly"],
-            index=1, key="ml_timeline_view"
-        )
 
-    # Build timeline data
-    if timeline_view == "Hourly":
+    # Build timeline data from raw filtered operations
+    if view == "Hourly":
         bucket_fn = _parse_date_hour
-        bucket_label = lambda x: x  # "YYYY-MM-DDTHH:00"
-    elif timeline_view == "Weekly":
-        bucket_fn = lambda ts: _parse_week(ts)
-        bucket_label = lambda x: x
-    elif timeline_view == "Monthly":
-        bucket_fn = lambda ts: _parse_month(ts)
-        bucket_label = lambda x: x
-    else:  # Daily
-        bucket_fn = lambda ts: _parse_date(ts)
-        bucket_label = lambda x: x
+        window_fn = lambda bk: bk[:10]  # YYYY-MM-DD
+    elif view == "Daily":
+        bucket_fn = _parse_date
+        window_fn = lambda bk: bk[:7]   # YYYY-MM
+    elif view == "Weekly":
+        bucket_fn = _parse_week
+    else:  # Monthly
+        bucket_fn = _parse_month
+
+    if view in ("Weekly", "Monthly"):
+        window_fn = lambda bk: bk[:4]   # YYYY
 
     group_key = "tool_name" if timeline_grouping == "Tool" else "command"
 
+    # Aggregate: {bucket_key: {group_name: count}}
     timeline_buckets: dict[str, dict[str, int]] = {}
-    for e in entities:
-        bucket = bucket_fn(e["start_time"])
-        if isinstance(bucket, tuple):
-            bucket = bucket[0]  # _parse_date_hour returns tuple
-        gk = e[group_key]
+    for op in filtered:
+        bucket = bucket_fn(op.get("started_at"))
+        gk = op.get(group_key, "unknown")
         if bucket not in timeline_buckets:
             timeline_buckets[bucket] = {}
         timeline_buckets[bucket][gk] = timeline_buckets[bucket].get(gk, 0) + 1
 
-    if timeline_buckets:
-        sorted_buckets = sorted(timeline_buckets.keys())
-        # Get top groups across all buckets
+    if not timeline_buckets:
+        st.caption("No timeline data")
+    else:
+        # Compute windows
+        windows = sorted(set(window_fn(bk) for bk in timeline_buckets))
+
+        # Resolve window index
+        if st.session_state.ml_timeline_window_idx < 0 or st.session_state.ml_timeline_window_idx >= len(windows):
+            st.session_state.ml_timeline_window_idx = len(windows) - 1
+        current_window = windows[st.session_state.ml_timeline_window_idx]
+
+        # Filter to current window
+        window_buckets = {
+            bk: groups for bk, groups in timeline_buckets.items()
+            if window_fn(bk) == current_window
+        }
+        sorted_buckets = sorted(window_buckets.keys())
+
+        # Get top groups within this window
         all_groups: dict[str, int] = {}
-        for b in sorted_buckets:
-            for gk, cnt in timeline_buckets[b].items():
+        for bk in sorted_buckets:
+            for gk, cnt in window_buckets[bk].items():
                 all_groups[gk] = all_groups.get(gk, 0) + cnt
         top_groups = [g for g, _ in sorted(all_groups.items(), key=lambda x: x[1], reverse=True)[:8]]
 
-        fig = go.Figure()
-        colors = golden_ratio_colors(len(top_groups))
-        for i, g in enumerate(top_groups):
-            counts = [timeline_buckets[b].get(g, 0) for b in sorted_buckets]
-            fig.add_trace(go.Bar(
-                name=g, x=sorted_buckets, y=counts,
-                marker_color=colors[i],
-            ))
-
-        # Window navigation
-        WINDOW_SIZE = 20
-        if len(sorted_buckets) > WINDOW_SIZE:
-            if "ml_tl_offset" not in st.session_state:
-                st.session_state.ml_tl_offset = 0
-            offset = st.session_state.ml_tl_offset
-            start = max(0, min(offset, len(sorted_buckets) - WINDOW_SIZE))
-            end = min(start + WINDOW_SIZE, len(sorted_buckets))
-            fig.update_xaxes(range=[start - 0.5, end - 0.5] if start < len(sorted_buckets) else None)
-
-            nav_prev, nav_label, nav_next = st.columns([1, 2, 1])
-            with nav_prev:
-                if st.button("← Previous", key="ml_tl_prev", disabled=offset <= 0):
-                    st.session_state.ml_tl_offset = max(0, offset - WINDOW_SIZE)
-                    st.rerun()
-            with nav_label:
-                st.caption(f"Showing buckets {start + 1}–{end} of {len(sorted_buckets)}")
-            with nav_next:
-                if st.button("Next →", key="ml_tl_next", disabled=end >= len(sorted_buckets)):
-                    st.session_state.ml_tl_offset = offset + WINDOW_SIZE
-                    st.rerun()
+        # Short labels for x-axis (matching telemetry server)
+        if view == "Hourly":
+            x_labels = [bk[11:16] if len(bk) >= 16 else bk for bk in sorted_buckets]  # "14:00"
+        elif view == "Daily":
+            x_labels = [bk[8:10] if len(bk) >= 10 else bk for bk in sorted_buckets]  # "18"
         else:
-            st.session_state.ml_tl_offset = 0
+            x_labels = sorted_buckets  # "2026-W25" or "2026-06"
+
+        # Build stacked bar chart
+        fig = go.Figure()
+        colors = _get_stable_colors(top_groups)
+        for i, g in enumerate(top_groups):
+            counts = [window_buckets[bk].get(g, 0) for bk in sorted_buckets]
+            fig.add_trace(go.Bar(
+                name=_trunc(g, 40), x=x_labels, y=counts,
+                marker_color=colors[i],
+                hovertemplate=f"<b>{g}</b><br>%{{x}}: %{{y}}<extra></extra>",
+            ))
 
         fig.update_layout(
             barmode="stack",
             margin=dict(l=0, r=0, t=0, b=40),
             height=350,
-            legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5),
+            legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5,
+                       font=dict(size=10)),
+            xaxis_title="Time Period",
+            yaxis_title="Executions",
         )
+        fig.update_yaxes(rangemode="tozero")
+
+        # Window navigation (prev/next)
+        nav_prev, nav_label, nav_next = st.columns([1, 2, 1])
+        with nav_prev:
+            prev_disabled = st.session_state.ml_timeline_window_idx <= 0
+            if st.button("← Previous", key="ml_tl_prev", disabled=prev_disabled, use_container_width=True):
+                if not prev_disabled:
+                    st.session_state.ml_timeline_window_idx -= 1
+                    st.rerun()
+        with nav_label:
+            window_display = _format_window_label(current_window, view)
+            st.caption(f"Window: {window_display}  ({st.session_state.ml_timeline_window_idx + 1}/{len(windows)})")
+        with nav_next:
+            next_disabled = st.session_state.ml_timeline_window_idx >= len(windows) - 1
+            if st.button("Next →", key="ml_tl_next", disabled=next_disabled, use_container_width=True):
+                if not next_disabled:
+                    st.session_state.ml_timeline_window_idx += 1
+                    st.rerun()
+
         st.plotly_chart(fig, use_container_width=True)
 
-    # ── Log Feed Table ────────────────────────────────────────────────
+    # ── Logs Table ────────────────────────────────────────────────────
     st.divider()
-    st.markdown("### Live Feed")
+    st.markdown("### Logs")
 
     # Pagination
     PAGE_SIZE = 25
@@ -1438,13 +1552,13 @@ def page_mindlayer_skills():
 
     pag_col1, pag_col2, pag_col3 = st.columns([1, 2, 1])
     with pag_col1:
-        if st.button("← Previous Page", key="ml_feed_prev", disabled=page <= 0):
+        if st.button("← Previous Page", key="ml_feed_prev", disabled=page <= 0, use_container_width=True):
             st.session_state.ml_page = page - 1
             st.rerun()
     with pag_col2:
         st.caption(f"Page {page + 1} of {total_pages}  ({start_idx + 1}–{end_idx} of {len(entities)})")
     with pag_col3:
-        if st.button("Next Page →", key="ml_feed_next", disabled=page >= total_pages - 1):
+        if st.button("Next Page →", key="ml_feed_next", disabled=page >= total_pages - 1, use_container_width=True):
             st.session_state.ml_page = page + 1
             st.rerun()
 
@@ -1462,7 +1576,7 @@ def page_mindlayer_skills():
             with h1:
                 badge = "🔗" if is_wf else "📋"
                 st.markdown(
-                    f"{badge} **{entity['tool_name']}** · `{entity['command']}`  "
+                    f"{badge} **{_trunc(entity['tool_name'])}** · `{_trunc(entity['command'])}`  "
                     f"<span style='color:{status_color};font-weight:600;'>● {status.upper()}</span>",
                     unsafe_allow_html=True,
                 )
@@ -1471,7 +1585,7 @@ def page_mindlayer_skills():
             with h3:
                 st.caption(f"Started: {_fmt_ts(entity['start_time'])}")
             with h4:
-                st.caption(f"Entity: `{eid[:32]}{'…' if len(eid) > 32 else ''}`")
+                st.caption(f"Entity: `{_trunc(eid, 28)}`")
             with h5:
                 expand_key = f"ml_expand_{eid}"
                 if st.button("Details", key=f"ml_btn_{eid}"):
@@ -1487,7 +1601,7 @@ def page_mindlayer_skills():
                         sd1, sd2, sd3 = st.columns([2, 1, 1])
                         with sd1:
                             st.markdown(
-                                f"**{step.get('command', '?')}**  "
+                                f"**{_trunc(step.get('command', '?'))}**  "
                                 f"<span style='color:{sc};font-weight:600;'>● {step_status}</span>",
                                 unsafe_allow_html=True,
                             )
@@ -1521,6 +1635,7 @@ def page_mindlayer_skills():
                         sf = step.get("source_file", "")
                         if sf:
                             st.caption(f"Source: `{sf}`")
+
 
 
 # ──────────────────────────────────────────────────────────────────────
