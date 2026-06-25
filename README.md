@@ -60,6 +60,41 @@ Hermes Agent produces rich usage data (SQLite, JSONL logs, tool payloads) but no
 
 ---
 
+## Setup
+
+### One-command install
+
+```bash
+git clone <this-repo>
+cd hermes-analytics
+./install.sh
+```
+
+`install.sh` does four things:
+1. Checks Python 3 and pip are available
+2. Installs dependencies from `requirements.txt` (skips if already installed)
+3. Runs `userend/install.sh` to configure username and optional remote server
+4. Runs `python3 collector.py` to generate the initial `snapshot_latest.json`
+
+It's idempotent — safe to re-run after partial failures or upgrades.
+
+### Start services
+
+```bash
+python server.py &                # REST API on port 5555
+streamlit run dashboard.py        # Dashboard on http://localhost:8501
+```
+
+### Remote setup (Mode B)
+
+For team dashboards where multiple users push to a shared server:
+
+1. **On the server:** clone the repo, run `./install.sh`, start `python server.py` on a reachable interface
+2. **On each user machine:** run `./userend/install.sh`, enter username and the server's URL. The collector will POST to the server instead of writing local files.
+3. All user snapshots are stored at `server_data/{username}/snapshot_*.json` on the server.
+
+---
+
 ## Userend client (`userend/`)
 
 The `userend/` directory is the self-contained, installable client that each Hermes Agent user deploys.
@@ -198,7 +233,7 @@ Five dashboard pages served by `dashboard.py`, read from the REST API:
 | 📋 **Session Overview** | Sessions per day & by model charts, model/platform filters, session table with click-to-select | ✅ |
 | 🔍 **Session Detail** | Per-session skills, tools, shell commands, errors, user messages; dropdown picker | ✅ |
 | ⭐ **Skills Analytics** | Ranking table, bar chart, token histogram, stacked timeline, preceding messages, skill drill-down | ✅ |
-| 🔧 **Tools Analytics** | Ranking table, call distribution (pie), stacked timeline, session histogram, tool drill-down | ✅ |
+| ⭐ **Tools Analytics** | Ranking table, call distribution (pie), stacked timeline, session histogram, tool drill-down | ✅ |
 
 ### Quick start (dashboard)
 
@@ -254,6 +289,38 @@ streamlit run dashboard.py          # starts on http://localhost:8501
 - [ ] Per-message token counts (blocked: Hermes doesn't populate this column)
 - [ ] Auto-load vs. manual skill detection (blocked: Hermes doesn't expose this distinction)
 - [ ] Incremental collection (only new sessions since last run)
+
+---
+
+## File structure
+
+```
+hermes-analytics/
+├── install.sh                  # One-command setup (idempotent)
+├── collector.py                # Deprecation wrapper → userend.collector
+├── server.py                   # Flask REST API (multi-user)
+├── dashboard.py                # Streamlit dashboards (5 pages)
+├── requirements.txt            # Python dependencies
+├── snapshot_latest.json        # Local mode snapshot (auto-generated)
+├── README.md
+├── userend/                    # User-side client (installed per Hermes user)
+│   ├── install.sh              # Config wizard (username, remote URL)
+│   ├── hermes-snapshot         # Agent slash-command script
+│   ├── collector.py            # Main collector (9-step pipeline)
+│   └── test_snapshot_compat.py # Backward-compat verification
+├── server_data/                # Multi-user flat-file storage (Mode B)
+│   └── {username}/
+│       └── snapshot_*.json
+├── tests/                      # Test suite (42 tests)
+│   ├── conftest.py             # Synthetic fixture DB builder
+│   ├── test_collector.py       # 11 collector tests
+│   ├── test_api.py             # 24 API tests
+│   └── test_schema.py          # 7 schema validation tests
+└── openspec/                   # Design documentation (ADR, specs)
+    ├── config.yaml
+    ├── specs/                  # 22 capability specs
+    └── changes/                # Archived change proposals
+```
 
 ---
 
