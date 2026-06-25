@@ -88,12 +88,19 @@ You can refresh the data anytime with the slash command or `python3 collector.py
 
 ---
 
-## Slash command: `/hermes-snapshot-analytics`
+## Command: `/hermes-snapshot-analytics` or `hermes snapshot-analytics`
 
 From inside a Hermes chat session:
 
 ```
 /hermes-snapshot-analytics
+```
+
+Or from the terminal directly:
+
+```bash
+hermes snapshot-analytics
+hermes snapshot-analytics --server-port=5556 --dashboard-port=8502
 ```
 
 What happens:

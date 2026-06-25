@@ -1,8 +1,10 @@
-"""Hermes Analytics Plugin — registration + slash command handler.
+"""Hermes Analytics Plugin — registration, slash command, and CLI command.
 
-Registers /hermes-snapshot-analytics in Hermes chat sessions.
-The handler starts a local Flask server, runs the collector,
-launches a local Streamlit dashboard, and returns the URL.
+Registers /hermes-snapshot-analytics in Hermes chat sessions and
+hermes snapshot-analytics as a standalone CLI subcommand.
+
+Both start a local Flask server, run the collector, launch a local
+Streamlit dashboard, and return the URL.
 """
 
 import json
@@ -108,41 +110,77 @@ def _resolve_username() -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 def _ensure_dependencies() -> str | None:
-    """Auto-install missing Python packages. Returns an error message or None."""
-    missing = []
-    for pkg in ("flask", "streamlit", "plotly"):
+    """Auto-install missing Python packages into the running environment.
+
+    Hermes plugins run in a venv or managed Python that may not have pip
+    bootstrapped.  We handle four scenarios:
+
+    1. Dependencies already importable → no-op
+    2. pip missing from the interpreter → bootstrap via ensurepip (stdlib)
+    3. PEP 668 externally-managed-environment → retry with --break-system-packages
+    4. Everything else → report the error with a manual fallback
+    """
+    required = ("flask", "streamlit", "plotly")
+    missing = [p for p in required]
+    for pkg in required:
         try:
             __import__(pkg)
+            missing.remove(pkg)
         except ImportError:
-            missing.append(pkg)
+            pass
     if not missing:
         return None
 
     logger.info("Auto-installing missing dependencies: %s", missing)
     reqs_path = _PLUGIN_DIR / "requirements.txt"
 
-    def _try_install(extra_args: list[str] | None = None) -> subprocess.CompletedProcess:
-        cmd = [sys.executable, "-m", "pip", "install", "-r", str(reqs_path)]
-        if extra_args:
-            cmd.extend(extra_args)
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    def _run_pip(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
+        cmd = [sys.executable, "-m", "pip"] + args
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
-    # Try normal install first, then fall back to --break-system-packages
-    # (needed on Debian/Ubuntu where PEP 668 blocks system-wide pip installs)
-    result = _try_install()
+    # ── Step 0: bootstrap pip if the interpreter is missing it ──
+    # Hermes may ship a venv without pip.  ensurepip is always present (3.4+).
+    have_pip = False
+    try:
+        check = _run_pip(["--version"], timeout=10)
+        have_pip = check.returncode == 0
+    except Exception:
+        pass
+
+    if not have_pip:
+        logger.info("pip not available — bootstrapping via ensurepip")
+        bootstrap = subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if bootstrap.returncode != 0:
+            tail = bootstrap.stderr.strip().split("\n")[-5:]
+            return (
+                "❌ Could not bootstrap pip in the Hermes Python environment.\n\n"
+                "```\n" + "\n".join(tail) + "\n```\n\n"
+                f"Try manually:\n```bash\n"
+                f"cd {_PLUGIN_DIR}\n"
+                f"{sys.executable} -m ensurepip --upgrade\n"
+                f"{sys.executable} -m pip install -r requirements.txt\n```"
+            )
+
+    # ── Step 1: install ──
+    result = _run_pip(["install", "-r", str(reqs_path)])
     if result.returncode != 0 and "externally-managed" in result.stderr:
         logger.info("PEP 668 detected — retrying with --break-system-packages")
-        result = _try_install(["--break-system-packages"])
+        result = _run_pip(["install", "--break-system-packages", "-r", str(reqs_path)])
 
     if result.returncode != 0:
         stderr_tail = result.stderr.strip().split("\n")[-5:]
         return (
-            f"❌ Auto-install of dependencies failed.\n\n"
-            f"```\n" + "\n".join(stderr_tail) + "\n```\n\n"
-            f"Try manually:\n```bash\ncd {_PLUGIN_DIR} && pip install -r requirements.txt\n```"
+            "❌ Auto-install of dependencies failed.\n\n"
+            "```\n" + "\n".join(stderr_tail) + "\n```\n\n"
+            f"Try manually:\n```bash\n"
+            f"cd {_PLUGIN_DIR}\n"
+            f"{sys.executable} -m pip install -r requirements.txt\n```"
         )
 
-    # Verify each package is now importable
+    # ── Step 2: verify ──
     still_missing = []
     for pkg in missing:
         try:
@@ -151,10 +189,13 @@ def _ensure_dependencies() -> str | None:
             still_missing.append(pkg)
     if still_missing:
         return (
-            f"❌ Dependencies installed but still can't import: {', '.join(still_missing)}\n\n"
-            f"Try manually:\n```bash\ncd {_PLUGIN_DIR} && pip install -r requirements.txt\n```"
+            f"❌ pip install succeeded but import still fails: {', '.join(still_missing)}\n\n"
+            f"Try manually:\n```bash\n"
+            f"cd {_PLUGIN_DIR}\n"
+            f"{sys.executable} -m pip install -r requirements.txt\n```"
         )
-    logger.info("Auto-install complete — flask and streamlit are ready")
+
+    logger.info("Auto-install complete — %s are ready", ", ".join(missing))
     return None
 
 
@@ -305,15 +346,55 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# CLI command: hermes snapshot-analytics
+# ──────────────────────────────────────────────────────────────────────
+
+def _cli_handler(args):
+    """Handler for `hermes snapshot-analytics` — adapt argparse → slash handler."""
+    raw_args_parts = []
+    if getattr(args, "server_port", None):
+        raw_args_parts.append(f"--server-port={args.server_port}")
+    if getattr(args, "dashboard_port", None):
+        raw_args_parts.append(f"--dashboard-port={args.dashboard_port}")
+    raw_args = " ".join(raw_args_parts)
+
+    result = _handle_snapshot_analytics(raw_args)
+    # Strip markdown formatting for clean terminal output
+    for char in ("*", "`", "#"):
+        result = result.replace(char, "")
+    print(result)
+
+
+def _setup_argparse(subparser):
+    """Build the argparse tree for `hermes snapshot-analytics`."""
+    subparser.add_argument(
+        "--server-port", type=int, default=None,
+        help=f"Port for the local analytics server (default: {_DEFAULT_SERVER_PORT})",
+    )
+    subparser.add_argument(
+        "--dashboard-port", type=int, default=None,
+        help=f"Port for the Streamlit dashboard (default: {_DEFAULT_DASHBOARD_PORT})",
+    )
+    subparser.set_defaults(func=_cli_handler)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Plugin registration
 # ──────────────────────────────────────────────────────────────────────
 
 def register(ctx):
-    """Register the /hermes-snapshot-analytics slash command."""
+    """Register the slash command and CLI subcommand."""
     ctx.register_command(
         "hermes-snapshot-analytics",
         handler=_handle_snapshot_analytics,
         description="Start Hermes Analytics: collect snapshot, launch local dashboard",
+    )
+
+    ctx.register_cli_command(
+        name="snapshot-analytics",
+        help="Start the Hermes Analytics server, collector, and dashboard",
+        setup_fn=_setup_argparse,
+        handler_fn=_cli_handler,
     )
 
     logger.info("Hermes Analytics plugin registered — /hermes-snapshot-analytics available")
