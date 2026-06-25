@@ -58,16 +58,15 @@ def _find_free_port(start: int) -> int:
 
 
 def _wait_for_health(url: str, timeout: float = 5.0) -> bool:
-    """Poll /api/health until it returns 200 or timeout expires."""
+    """Poll /api/health until the server responds (any status = alive)."""
     import urllib.request
     import urllib.error
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=1) as resp:
-                if resp.status == 200:
-                    return True
+            urllib.request.urlopen(req, timeout=1)
+            return True  # any response means the server is alive
         except (urllib.error.URLError, OSError):
             pass
         time.sleep(0.3)

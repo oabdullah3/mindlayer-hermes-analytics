@@ -84,15 +84,11 @@ def _error(message, status):
 @app.route("/api/health")
 def health():
     snapshot = _load_snapshot()
-    if not snapshot:
-        return _json(
-            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
-            503,
-        )
-    total_sessions = len(snapshot.get("sessions", []))
+    total_sessions = len(snapshot.get("sessions", [])) if snapshot else 0
     return _json({
         "status": "ok",
         "total_sessions": total_sessions,
+        "has_data": snapshot is not None,
     })
 
 

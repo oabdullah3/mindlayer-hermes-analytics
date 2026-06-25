@@ -97,8 +97,11 @@ class TestHealth:
     def test_health_no_snapshot(self, client, monkeypatch):
         monkeypatch.setattr(server, "_load_snapshot", lambda: None)
         resp = client.get("/api/health")
-        assert resp.status_code == 503
-        assert resp.get_json()["status"] == "error"
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["has_data"] is False
+        assert data["total_sessions"] == 0
 
 
 # ── Snapshots ───────────────────────────────────────────────────────
