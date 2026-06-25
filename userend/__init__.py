@@ -107,6 +107,95 @@ def _resolve_username() -> str:
 # Slash command handler
 # ──────────────────────────────────────────────────────────────────────
 
+def _ensure_dependencies() -> str | None:
+    """Auto-install missing Python packages into the running environment.
+
+    Hermes plugins run in a venv or managed Python that may not have pip
+    bootstrapped.  We handle four scenarios:
+
+    1. Dependencies already importable → no-op
+    2. pip missing from the interpreter → bootstrap via ensurepip (stdlib)
+    3. PEP 668 externally-managed-environment → retry with --break-system-packages
+    4. Everything else → report the error with a manual fallback
+    """
+    required = ("flask", "streamlit", "plotly")
+    missing = [p for p in required]
+    for pkg in required:
+        try:
+            __import__(pkg)
+            missing.remove(pkg)
+        except ImportError:
+            pass
+    if not missing:
+        return None
+
+    logger.info("Auto-installing missing dependencies: %s", missing)
+    reqs_path = _REPO_ROOT / "requirements.txt"
+
+    def _run_pip(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
+        cmd = [sys.executable, "-m", "pip"] + args
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    # ── Step 0: bootstrap pip if the interpreter is missing it ──
+    have_pip = False
+    try:
+        check = _run_pip(["--version"], timeout=10)
+        have_pip = check.returncode == 0
+    except Exception:
+        pass
+
+    if not have_pip:
+        logger.info("pip not available — bootstrapping via ensurepip")
+        bootstrap = subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if bootstrap.returncode != 0:
+            tail = bootstrap.stderr.strip().split("\n")[-5:]
+            return (
+                "❌ Could not bootstrap pip in the Hermes Python environment.\n\n"
+                "```\n" + "\n".join(tail) + "\n```\n\n"
+                f"Try manually:\n```bash\n"
+                f"cd {_REPO_ROOT}\n"
+                f"{sys.executable} -m ensurepip --upgrade\n"
+                f"{sys.executable} -m pip install -r requirements.txt\n```"
+            )
+
+    # ── Step 1: install ──
+    result = _run_pip(["install", "-r", str(reqs_path)])
+    if result.returncode != 0 and "externally-managed" in result.stderr:
+        logger.info("PEP 668 detected — retrying with --break-system-packages")
+        result = _run_pip(["install", "--break-system-packages", "-r", str(reqs_path)])
+
+    if result.returncode != 0:
+        stderr_tail = result.stderr.strip().split("\n")[-5:]
+        return (
+            "❌ Auto-install of dependencies failed.\n\n"
+            "```\n" + "\n".join(stderr_tail) + "\n```\n\n"
+            f"Try manually:\n```bash\n"
+            f"cd {_REPO_ROOT}\n"
+            f"{sys.executable} -m pip install -r requirements.txt\n```"
+        )
+
+    # ── Step 2: verify ──
+    still_missing = []
+    for pkg in missing:
+        try:
+            __import__(pkg)
+        except ImportError:
+            still_missing.append(pkg)
+    if still_missing:
+        return (
+            f"❌ pip install succeeded but import still fails: {', '.join(still_missing)}\n\n"
+            f"Try manually:\n```bash\n"
+            f"cd {_REPO_ROOT}\n"
+            f"{sys.executable} -m pip install -r requirements.txt\n```"
+        )
+
+    logger.info("Auto-install complete — %s are ready", ", ".join(missing))
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Mode: CLI output (printed to stdout, no browser)
 # ──────────────────────────────────────────────────────────────────────
@@ -233,15 +322,23 @@ def _run_browser_mode(
     if actual_dashboard_port != dp:
         messages.append(f"Dashboard port {dp} occupied — using port {actual_dashboard_port}")
 
-    dash_proc = subprocess.Popen(
-        ["streamlit", "run", str(_REPO_ROOT / "dashboard.py"),
-         "--server.port", str(actual_dashboard_port),
-         "--server.headless", "true",
-         "--browser.gatherUsageStats", "false"],
-        env={**os.environ, "API_BASE_URL": server_url},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        dash_proc = subprocess.Popen(
+            [sys.executable, "-m", "streamlit", "run", str(_REPO_ROOT / "dashboard.py"),
+             "--server.port", str(actual_dashboard_port),
+             "--server.headless", "true",
+             "--browser.gatherUsageStats", "false"],
+            env={**os.environ, "API_BASE_URL": server_url},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        _kill_from_pid_file(_SERVER_PID_FILE)
+        return (
+            "❌ Streamlit is not installed on this system.\n"
+            "Install it with: pip install streamlit\n"
+            "Or use --mode cli for terminal output instead."
+        ), messages
 
     with open(_DASHBOARD_PID_FILE, "w") as f:
         f.write(str(dash_proc.pid))
@@ -278,6 +375,11 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
     Supports --mode (cli|browser|both, default: cli) and --fallback.
     """
+    # ── 0. Dependency check ──
+    dep_err = _ensure_dependencies()
+    if dep_err:
+        return dep_err
+
     # Parse args
     mode = "cli"           # default: CLI (agent can't see browser)
     fallback = False

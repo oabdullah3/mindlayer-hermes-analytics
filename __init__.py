@@ -327,15 +327,23 @@ def _run_browser_mode(
     if actual_dashboard_port != dp:
         messages.append(f"Dashboard port {dp} occupied — using port {actual_dashboard_port}")
 
-    dash_proc = subprocess.Popen(
-        ["streamlit", "run", str(_PLUGIN_DIR / "dashboard.py"),
-         "--server.port", str(actual_dashboard_port),
-         "--server.headless", "true",
-         "--browser.gatherUsageStats", "false"],
-        env={**os.environ, "API_BASE_URL": server_url},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        dash_proc = subprocess.Popen(
+            [sys.executable, "-m", "streamlit", "run", str(_PLUGIN_DIR / "dashboard.py"),
+             "--server.port", str(actual_dashboard_port),
+             "--server.headless", "true",
+             "--browser.gatherUsageStats", "false"],
+            env={**os.environ, "API_BASE_URL": server_url},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        _kill_from_pid_file(_SERVER_PID_FILE)
+        return (
+            "❌ Streamlit is not installed on this system.\n"
+            "Install it with: pip install streamlit\n"
+            "Or use --mode cli for terminal output instead."
+        ), messages
 
     with open(_DASHBOARD_PID_FILE, "w") as f:
         f.write(str(dash_proc.pid))
