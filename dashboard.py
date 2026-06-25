@@ -252,7 +252,9 @@ def page_portal():
             ]
             st.dataframe(skill_data, width='stretch', hide_index=True)
             if len(skills) > 5:
-                st.caption(f"…and {len(skills) - 5} more. **View all → Skills** in sidebar.")
+                st.caption(f"…and {len(skills) - 5} more.")
+                # Native link that routes to your skills_page object
+                st.page_link(skills_page, label="View all Skills →", icon="⭐")
         else:
             st.caption("No skills data.")
 
@@ -269,7 +271,9 @@ def page_portal():
             ]
             st.dataframe(tool_data, width='stretch', hide_index=True)
             if len(tools) > 5:
-                st.caption(f"…and {len(tools) - 5} more. **View all → Tools** in sidebar.")
+                st.caption(f"…and {len(tools) - 5} more.")
+                # Native link that routes to your tools_page object
+                st.page_link(tools_page, label="View all Tools →", icon="🔧")
         else:
             st.caption("No tools data.")
 
