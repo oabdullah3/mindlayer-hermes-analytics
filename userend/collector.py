@@ -351,35 +351,127 @@ def attach_preceding_user_messages(
 # Step 4: Tool Call Aggregation (Tasks 5.1 – 5.3)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _parse_tool_calls_json(content: str | None) -> list[str]:
+    """Parse tool_calls JSON and return list of function.name values.
+    
+    Returns empty list if content is null, empty, or malformed.
+    """
+    if not content:
+        return []
+    try:
+        tool_calls = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(tool_calls, list):
+        return []
+    names = []
+    for tc in tool_calls:
+        fn = tc.get("function", {})
+        name = fn.get("name")
+        if name:
+            names.append(name)
+    return names
+
+
 def aggregate_tool_calls(
     conn: sqlite3.Connection, session_id: int
 ) -> list[dict]:
-    """Aggregate tool calls per session by tool_name."""
+    """Aggregate tool calls per session by resolving names from tool_calls JSON.
+    
+    Per ADR visual-overhaul D1:
+    - Query all assistant messages with non-null tool_calls
+    - Parse function.name from each tool call entry
+    - Match tool-response rows (role='tool') by position: the Nth tool response
+      after an assistant message corresponds to the Nth entry in its tool_calls array
+    - Compute success rate per tool name
+    - Falls back to messages.tool_name column if all tool_calls are null/malformed
+    """
+    # ── Query assistant messages with tool_calls ──
     cursor = conn.execute(
         """
-        SELECT tool_name,
-               COUNT(*) AS cnt,
-               GROUP_CONCAT(id) AS msg_ids
+        SELECT id, tool_calls
         FROM messages
         WHERE session_id = ?
-          AND role = 'tool'
-        GROUP BY tool_name
-        ORDER BY cnt DESC
+          AND role = 'assistant'
+          AND tool_calls IS NOT NULL
+        ORDER BY id ASC
         """,
         (session_id,),
     )
+    assistant_rows = cursor.fetchall()
 
-    tools = []
-    for row in cursor:
-        msg_ids_str = row["msg_ids"] or ""
-        msg_ids = [int(x) for x in msg_ids_str.split(",") if x]
-        tools.append(
-            {
-                "tool_name": row["tool_name"] or "unknown",
-                "count": row["cnt"],
-                "message_ids": msg_ids,
-            }
+    # ── Build tool-name → {count, success_count, message_ids} map ──
+    tool_map: dict[str, dict] = {}  # tool_name -> {count, success_count, msg_ids}
+
+    for row in assistant_rows:
+        names = _parse_tool_calls_json(row["tool_calls"])
+        if not names:
+            continue
+
+        # Fetch the N tool-response rows (role='tool') that follow this assistant message.
+        # Positional matching: 1st tool call → 1st tool response, etc.
+        placeholders = ",".join("?" * len(names))
+        tool_rows = conn.execute(
+            f"""
+            SELECT id, content
+            FROM messages
+            WHERE session_id = ?
+              AND role = 'tool'
+              AND id > ?
+            ORDER BY id ASC
+            LIMIT {len(names)}
+            """,
+            (session_id, row["id"]),
+        ).fetchall()
+
+        for i, name in enumerate(names):
+            if name not in tool_map:
+                tool_map[name] = {"count": 0, "success_count": 0, "msg_ids": []}
+            tool_map[name]["count"] += 1
+
+            # Check success from matching tool response (if available)
+            if i < len(tool_rows):
+                tr = tool_rows[i]
+                tool_map[name]["msg_ids"].append(tr["id"])
+                content = tr["content"] or ""
+                # Success = non-empty content (tool completed)
+                if content.strip():
+                    tool_map[name]["success_count"] += 1
+
+    # ── Fallback: use messages.tool_name if no results from tool_calls ──
+    if not tool_map:
+        fb_cursor = conn.execute(
+            """
+            SELECT tool_name, COUNT(*) AS cnt, GROUP_CONCAT(id) AS msg_ids
+            FROM messages
+            WHERE session_id = ? AND role = 'tool'
+            GROUP BY tool_name
+            ORDER BY cnt DESC
+            """,
+            (session_id,),
         )
+        for fb_row in fb_cursor:
+            name = fb_row["tool_name"] or "unknown"
+            msg_ids_str = fb_row["msg_ids"] or ""
+            msg_ids = [int(x) for x in msg_ids_str.split(",") if x]
+            tool_map[name] = {
+                "count": fb_row["cnt"],
+                "success_count": fb_row["cnt"],  # assume success in fallback
+                "msg_ids": msg_ids,
+            }
+
+    # ── Build result list ──
+    tools = []
+    for name, info in sorted(tool_map.items(), key=lambda x: x[1]["count"], reverse=True):
+        total = info["count"]
+        successes = info["success_count"]
+        success_rate = round(successes / total, 3) if total > 0 else 0.0
+        tools.append({
+            "tool_name": name,
+            "count": total,
+            "success_rate": success_rate,
+            "message_ids": info["msg_ids"],
+        })
 
     return tools
 
@@ -940,10 +1032,7 @@ def try_remote_push(snapshot: dict, remote_url: str, username: str | None = None
         return False
 
     body = dict(snapshot)  # shallow copy to avoid mutating the original
-    if username:
-        body["username"] = username
-    else:
-        print("WARNING: No username configured — set HERMES_ANALYTICS_USER in ~/.hermes-analytics.conf", file=sys.stderr)
+    body["username"] = username or os.environ.get("USER", "local")
 
     endpoint = remote_url.rstrip("/") + "/api/snapshots"
     try:
@@ -1045,7 +1134,7 @@ def collect(hermes_home: str | None = None) -> dict:
             for key in list(session.keys()):
                 if key not in (
                     "session_id", "platform", "chat_name", "model",
-                    "started_at", "ended_at", "ended_reason", "title",
+                    "started_at", "ended_at", "ended_reason",
                     "tokens", "stats", "skills_loaded", "tool_calls",
                     "shell_commands", "user_messages", "errors",
                 ):
@@ -1086,7 +1175,7 @@ def main() -> None:
 
     # Read user config for username and remote URL overrides
     user_config = read_user_config()
-    username = user_config.get("HERMES_ANALYTICS_USER")
+    username = os.environ.get("HERMES_ANALYTICS_USER") or user_config.get("HERMES_ANALYTICS_USER") or os.environ.get("USER", "local")
 
     # Check for remote push mode (env var takes precedence over config file)
     remote_url = os.environ.get("HERMES_ANALYTICS_REMOTE") or user_config.get("HERMES_ANALYTICS_REMOTE")
@@ -1099,31 +1188,23 @@ def main() -> None:
     )
     total_log_payloads = len(snapshot.get("log_payloads", {}).get("operations", []))
 
-    if remote_url:
-        print(f"INFO: Remote mode — posting to {remote_url}", file=sys.stderr)
-        success = try_remote_push(snapshot, remote_url, username=username)
-        if success:
-            print(
-                f"SUCCESS: Snapshot posted to {remote_url}/api/snapshots\n"
-                f"  {snapshot['global_insights']['total_sessions']} sessions, "
-                f"{total_skills} skill loads, "
-                f"{total_tools} tool types, "
-                f"{total_log_payloads} log payloads",
-            )
-        else:
-            # Fallback to local
-            path = write_local_snapshot(snapshot, args.output)
-            print(
-                f"SUCCESS: Snapshot written to {path}\n"
-                f"  {snapshot['global_insights']['total_sessions']} sessions, "
-                f"{total_skills} skill loads, "
-                f"{total_tools} tool types, "
-                f"{total_log_payloads} log payloads",
-            )
+    # Always push-first: POST to server (default localhost if no remote configured).
+    # The server only knows about data it receives — it never reads files off disk.
+    target_url = remote_url or "http://localhost:5555"
+    success = try_remote_push(snapshot, target_url, username=username)
+    if success:
+        print(
+            f"SUCCESS: Snapshot pushed to {target_url}/api/snapshots\n"
+            f"  {snapshot['global_insights']['total_sessions']} sessions, "
+            f"{total_skills} skill loads, "
+            f"{total_tools} tool types, "
+            f"{total_log_payloads} log payloads",
+        )
     else:
+        # Fallback: write local file (server was unreachable)
         path = write_local_snapshot(snapshot, args.output)
         print(
-            f"SUCCESS: Snapshot written to {path}\n"
+            f"SUCCESS: Snapshot written to {path} (server unreachable — start server.py first to push)\n"
             f"  {snapshot['global_insights']['total_sessions']} sessions, "
             f"{total_skills} skill loads, "
             f"{total_tools} tool types, "

@@ -2,12 +2,9 @@
 """Hermes Analytics REST API server.
 
 Multi-user analytics server with flat-file persistence per ADR-0002.
-Serves snapshot data via JSON endpoints, accepts snapshot POSTs from
-remote collectors with per-user storage, and supports single-user
-local mode as fallback.
-
-Reads from server_data/{username}/snapshot_*.json when available.
-Falls back to snapshot_latest.json for local single-user mode.
+Serves snapshot data exclusively via POST ingestion — the server has no
+knowledge of the filesystem outside server_data/. All snapshots must be
+pushed by the userend collector.
 """
 
 import json
@@ -95,43 +92,21 @@ def _load_all_user_snapshots(username: str) -> list[dict]:
     return snapshots
 
 
-def _load_single_user_local() -> dict | None:
-    """Fallback: load snapshot_latest.json for local single-user mode."""
-    path = os.path.join(os.getcwd(), "snapshot_latest.json")
-    if not os.path.isfile(path):
-        return None
-    return _load_json_file(path)
-
-
 def get_snapshot_for_user(username: str) -> dict | None:
     """
     Get the latest snapshot for a specific user.
-    Also checks the local fallback if the user has no server_data entries.
+    Returns None if no snapshot has been pushed for this user.
     """
     all_users = _load_all_users()
-    if username in all_users:
-        return all_users[username]
-    # Check local fallback
-    local = _load_single_user_local()
-    if local:
-        # In local mode, treat the single snapshot as belonging to any user
-        return local
-    return None
+    return all_users.get(username)
 
 
 def get_all_latest_snapshots() -> dict[str, dict]:
     """
-    Return {username: latest_snapshot} for all users.
-    Falls back to local mode with anonymous user if server_data is empty.
+    Return {username: latest_snapshot} for all users who have pushed data.
+    Returns empty dict if no snapshots have been posted yet.
     """
-    all_users = _load_all_users()
-    if all_users:
-        return all_users
-    # Local fallback
-    local = _load_single_user_local()
-    if local:
-        return {"local": local}
-    return {}
+    return _load_all_users()
 
 
 def _snapshot_filename() -> str:
@@ -232,7 +207,7 @@ def health():
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     total_sessions = sum(len(s.get("sessions", [])) for s in snapshots.values())
@@ -252,7 +227,7 @@ def snapshots_latest():
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -277,7 +252,7 @@ def skills_list():
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -290,7 +265,7 @@ def skill_detail(name):
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -330,7 +305,7 @@ def tools_list():
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -343,7 +318,7 @@ def tool_detail(name):
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -382,7 +357,7 @@ def sessions_list():
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -395,7 +370,7 @@ def session_detail(session_id):
     snapshots = get_all_latest_snapshots()
     if not snapshots:
         return _json(
-            {"status": "error", "message": "No snapshot available. Run userend/collector.py first."},
+            {"status": "error", "message": "No snapshot available. Push a snapshot via the collector first."},
             503,
         )
     username = request.args.get("username")
@@ -631,7 +606,7 @@ if __name__ == "__main__":
         print(f"  Users    : {len(snapshots)} ({', '.join(snapshots.keys())})")
         print(f"  Sessions : {total} total")
     else:
-        print("  No snapshots loaded (run userend/collector.py or POST /api/snapshots)")
+        print("  No snapshots loaded (push via /api/snapshots)")
 
     print(f"  Port     : {PORT}")
     print("-" * 56)

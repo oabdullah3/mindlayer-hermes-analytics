@@ -47,9 +47,15 @@ def load_snapshot():
         resp = requests.get(f"{API_BASE_URL}/api/snapshots/latest", timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            st.session_state.snapshot = data
+            # API returns {"users": [...], "snapshots": {...}} in multi-user mode.
+            # Extract the first available snapshot for dashboard consumption.
+            if "snapshots" in data and data["snapshots"]:
+                first_user = next(iter(data["snapshots"]))
+                st.session_state.snapshot = data["snapshots"][first_user]
+            else:
+                st.session_state.snapshot = data
         elif resp.status_code == 503:
-            st.session_state.api_error = "No snapshot data available. Run the collector to generate data."
+            st.session_state.api_error = "No snapshot data available. Push a snapshot via the collector first."
         else:
             st.session_state.api_error = f"API returned status {resp.status_code}: {resp.text[:200]}"
     except requests.ConnectionError:
@@ -96,30 +102,23 @@ def show_api_error():
 
 
 def compute_duration(started_at, ended_at):
-    """Compute human-readable duration between two ISO timestamps."""
+    """Compute human-readable duration between timestamps (ISO strings or Unix epoch)."""
     if not started_at or not ended_at:
         return "—"
     try:
-        fmt = "%Y-%m-%dT%H:%M:%S.%f"
-        # Handle both with and without microseconds
-        for f in (fmt, "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ"):
-            try:
-                start = datetime.strptime(started_at.replace("Z", ""), f)
-                break
-            except ValueError:
-                continue
+        # Handle Unix epoch floats/ints
+        if isinstance(started_at, (int, float)):
+            start = datetime.fromtimestamp(started_at, tz=timezone.utc)
         else:
-            return "—"
-        for f in (fmt, "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ"):
-            try:
-                end = datetime.strptime(ended_at.replace("Z", ""), f)
-                break
-            except ValueError:
-                continue
+            start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        if isinstance(ended_at, (int, float)):
+            end = datetime.fromtimestamp(ended_at, tz=timezone.utc)
         else:
-            return "—"
+            end = datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
         delta = end - start
         total_seconds = int(delta.total_seconds())
+        if total_seconds < 0:
+            return "—"
         if total_seconds < 60:
             return f"{total_seconds}s"
         elif total_seconds < 3600:
@@ -169,6 +168,30 @@ def extract_date(ts) -> str:
         return s[:10] if len(s) >= 10 else s
 
 
+def golden_ratio_colors(n: int) -> list[str]:
+    """Generate N perceptually distinct colors using the Golden Ratio conjugate.
+    
+    Uses HSL color space with hue = (i * phi_inv) mod 1, saturation=70%, lightness=50%.
+    Maximizes perceptual distance between adjacent colors for any N.
+    """
+    phi_inv = 0.618033988749895
+    colors = []
+    for i in range(n):
+        hue = (i * phi_inv) % 1.0
+        colors.append(f"hsl({hue * 360:.0f}, 70%, 50%)")
+    return colors
+
+
+def chart_layout(**kwargs):
+    """Return common chart layout with legend below and bar gaps."""
+    defaults = dict(
+        margin=dict(l=0, r=0, t=0, b=40),
+        legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5),
+    )
+    defaults.update(kwargs)
+    return defaults
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Page: Portal Home
 # ──────────────────────────────────────────────────────────────────────
@@ -199,14 +222,16 @@ def page_portal():
     platforms = set(s.get("platform") for s in sessions if s.get("platform"))
     generated_at = snap.get("generated_at", "—")
 
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sessions", total_sessions)
     col2.metric("Messages", f"{total_messages:,}")
     col3.metric("Skill Loads", total_skill_loads)
     col4.metric("Tool Calls", f"{total_tool_calls:,}")
-    col5.metric("Models", len(models))
-    col6.metric("Platforms", len(platforms))
-    col7.metric("Updated", format_timestamp(generated_at))
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Models", len(models))
+    col2.metric("Platforms", len(platforms))
+    col3.metric("Updated", str(extract_date(generated_at)))
+    col4.empty()
 
     st.divider()
 
@@ -318,7 +343,7 @@ def page_session_overview():
                 y=[date_counts[d] for d in dates_sorted],
                 labels={"x": "Date", "y": "Sessions"},
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+            fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=300)
             st.plotly_chart(fig, width='stretch')
 
     with col_chart2:
@@ -335,64 +360,73 @@ def page_session_overview():
                 orientation="h",
                 labels={"x": "Sessions", "y": "Model"},
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+            fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=300)
             st.plotly_chart(fig, width='stretch')
 
     st.divider()
 
-    # Session table
+    # Session table with View button per row
     st.subheader(f"Sessions ({len(filtered)})")
-    table_data = []
+    st.caption("Click **→ View** to jump directly to the session detail page.")
+
+    # Header row
+    with st.container(border=True):
+        # Adjusted ratios to give Started and Duration the room they need
+        hcols = st.columns([0.6, 2.5, 2.0, 1.0, 1.6, 1.1, 0.8, 0.7, 0.7, 0.7])
+        hcols[0].markdown("**View**")
+        hcols[1].markdown("**Title**")
+        hcols[2].markdown("**Model**")
+        hcols[3].markdown("**Platform**")
+        hcols[4].markdown("**Started**")
+        hcols[5].markdown("**Duration**")
+        hcols[6].markdown("**Tokens**")
+        hcols[7].markdown("**Skills**")
+        hcols[8].markdown("**Tools**")
+        hcols[9].markdown("**Msgs**")
+
     for s in filtered:
-        sid = s.get("session_id", "—")
-        total_tokens = compute_total_tokens(s.get("tokens", {}))
-        table_data.append({
-            "session_id": str(sid)[:30] if sid else "—",
-            "model": s.get("model", "—"),
-            "platform": s.get("platform", "—"),
-            "started_at": format_timestamp(s.get("started_at")),
-            "duration": compute_duration(s.get("started_at"), s.get("ended_at")),
-            "tokens": total_tokens,
-            "skills": len(s.get("skills_loaded", [])),
-            "tools": sum(t.get("count", 0) for t in s.get("tool_calls", [])),
-            "messages": s.get("stats", {}).get("message_count", 0),
-        })
-
-    # Session selection via dataframe
-    event = st.dataframe(
-        table_data,
-        width='stretch',
-        hide_index=True,
-        column_config={
-            "session_id": st.column_config.TextColumn("Session ID"),
-            "model": st.column_config.TextColumn("Model"),
-            "platform": st.column_config.TextColumn("Platform"),
-            "started_at": st.column_config.TextColumn("Started"),
-            "duration": st.column_config.TextColumn("Duration"),
-            "tokens": st.column_config.NumberColumn("Tokens"),
-            "skills": st.column_config.NumberColumn("Skills"),
-            "tools": st.column_config.NumberColumn("Tool Calls"),
-            "messages": st.column_config.NumberColumn("Messages"),
-        },
-        on_select="rerun",
-        selection_mode="single-row",
-    )
-
-    # Handle row click — navigate to session detail
-    if event.selection.rows:
-        selected_idx = event.selection.rows[0]
-        if selected_idx < len(filtered):
-            st.session_state.selected_session_id = filtered[selected_idx].get(
-                "session_id"
-            )
-            st.toast("Session selected! Click '🔍 Session Detail' in the sidebar to view it.", icon="✅")
-
+        sid = s.get("session_id")
+        total_tokens = int(compute_total_tokens(s.get("tokens", {})))
+        with st.container(border=True):
+            cols = st.columns([0.6, 2.5, 2.0, 1.0, 1.6, 1.1, 0.8, 0.7, 0.7, 0.7])
+            with cols[0]:
+                if st.button("→", key=f"view_{sid}", use_container_width=True):
+                    st.session_state.selected_session_id = sid
+                    st.switch_page(detail_page)
+            
+            # Removed the nowrap HTML spans so text behaves normally
+            cols[1].write((s.get("chat_name") or "Untitled")[:80])
+            cols[2].write(str(s.get("model", "—"))[:50])
+            cols[3].write(str(s.get("platform", "—")))
+            cols[4].write(format_timestamp(s.get("started_at")))
+            cols[5].write(compute_duration(s.get("started_at"), s.get("ended_at")))
+            cols[6].write(str(total_tokens))
+            cols[7].write(str(len(s.get('skills_loaded', []))))
+            cols[8].write(str(sum(t.get('count', 0) for t in s.get('tool_calls', []))))
+            cols[9].write(str(s.get('stats', {}).get('message_count', 0)))
 
 # ──────────────────────────────────────────────────────────────────────
 # Page: Session Detail
 # ──────────────────────────────────────────────────────────────────────
 
 def page_session_detail():
+    # Inject JS to instantly reset scroll position
+    # Inject an invisible anchor and pull it into view after a slight delay
+    st.html(
+        """
+        <div id="session-detail"></div>
+        <script>
+            setTimeout(function() {
+                var anchor = document.getElementById('detail-top-anchor');
+                if (anchor) {
+                    anchor.scrollIntoView({behavior: 'instant', block: 'start'});
+                }
+            }, 100); // 100ms delay beats Streamlit's native scroll restoration
+        </script>
+        """,
+        unsafe_allow_javascript=True
+    )
+    
     st.header("🔍 Session Detail")
 
     if show_api_error():
@@ -401,30 +435,36 @@ def page_session_detail():
     sessions = get_sessions()
     sid = st.session_state.get("selected_session_id")
 
-    # Also allow selecting session from dropdown
-    session_options = {s.get("session_id"): f"{s.get('session_id', '—')[:30]} — {format_timestamp(s.get('started_at'))}" for s in sessions}
+    # Auto-select latest session if none selected
     if not sid and sessions:
-        st.info("Select a session from the overview page, or pick one below:", icon="👆")
+        sid = sessions[0].get("session_id")
+        st.session_state.selected_session_id = sid
+
+    # Also allow selecting session from dropdown
+    session_options = {}
+    for s in sessions:
+        sid_key = s.get("session_id")
+        title = s.get("chat_name") or "Untitled"
+        label = f"{title} — {str(sid_key)[:20]} — {format_timestamp(s.get('started_at'))}"
+        session_options[sid_key] = label
 
     col_btn, col_select = st.columns([1, 3])
     with col_btn:
-        if st.button("← Back to Sessions", width='stretch'):
+        if st.button("← Back to Sessions", use_container_width=True):
             st.session_state.selected_session_id = None
-            st.rerun()
+            st.switch_page(overview_page)
     with col_select:
         selected = st.selectbox(
-            "Or select a session:",
-            options=[""] + list(session_options.keys()),
-            format_func=lambda x: session_options.get(x, "—") if x else "— Choose a session —",
+            "Select a session",
+            options=list(session_options.keys()),
+            format_func=lambda x: session_options.get(x, "—"),
+            index=list(session_options.keys()).index(sid) if sid in session_options else 0,
             key="detail_session_select",
+            label_visibility="collapsed",
         )
-        if selected:
+        if selected and selected != sid:
             sid = selected
             st.session_state.selected_session_id = sid
-
-    if not sid:
-        st.info("No session selected. Click a session in the Session Overview page.", icon="👆")
-        return
 
     # Find the session
     session = next((s for s in sessions if s.get("session_id") == sid), None)
@@ -432,19 +472,31 @@ def page_session_detail():
         st.error(f"Session not found: {sid}")
         return
 
-    st.session_state.selected_session_id = sid
-
     # ── Header ──
-    st.subheader(f"Session: {str(sid)[:50]}")
-    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-    col_m1.metric("Model", session.get("model", "—"))
-    col_m2.metric("Platform", session.get("platform", "—"))
-    col_m3.metric("Started", format_timestamp(session.get("started_at")))
-    col_m4.metric("Ended", format_timestamp(session.get("ended_at")))
-    col_m5.metric(
-        "Duration",
-        compute_duration(session.get("started_at"), session.get("ended_at")),
-    )
+    chat_name = session.get("chat_name") or ""
+    heading = f"{chat_name}" if chat_name else f"Session: {str(sid)[:50]}"
+    st.subheader(heading)
+    if chat_name:
+        st.caption(f"ID: {sid}")
+
+    model = str(session.get("model", "—"))
+    platform = session.get("platform", "—")
+    duration = compute_duration(session.get("started_at"), session.get("ended_at"))
+    started = format_timestamp(session.get("started_at"))
+    ended = format_timestamp(session.get("ended_at"))
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.caption("Model")
+        st.markdown(f"<span style='font-size: 1.8rem; font-weight: 600; line-height: 1.2;'>{model}</span>", unsafe_allow_html=True)
+    col_m2.metric("Platform", platform)
+    col_m3.metric("Duration", duration)
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Started", started)
+    col_m2.metric("Ended", ended)
+    # Show full model name below if it was truncated
+    if len(model) > 30:
+        st.caption(f"Full model: {model}")
 
     st.divider()
 
@@ -492,7 +544,7 @@ def page_session_detail():
                 labels={"x": "Loads", "y": "Skill"},
                 title="Skills Loaded",
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=250)
+            fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=30, b=0), height=250)
             st.plotly_chart(fig, width='stretch')
 
     with col_v2:
@@ -509,7 +561,7 @@ def page_session_detail():
                 labels={"x": "Calls", "y": "Tool"},
                 title="Tool Calls",
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=250)
+            fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=30, b=0), height=250)
             st.plotly_chart(fig, width='stretch')
 
     st.divider()
@@ -535,10 +587,12 @@ def page_session_detail():
     if tool_calls:
         tool_rows = []
         for tc in tool_calls:
+            sr = tc.get("success_rate")
+            sr_display = f"{sr * 100:.0f}%" if sr is not None else "—"
             tool_rows.append({
                 "Tool": tc.get("tool_name", "unknown"),
                 "Count": tc.get("count", 0),
-                "Message IDs": len(tc.get("message_ids", [])),
+                "Success Rate": sr_display,
             })
         st.dataframe(tool_rows, width='stretch', hide_index=True)
     else:
@@ -568,8 +622,15 @@ def page_session_detail():
     if user_msgs:
         for um in user_msgs:
             ts = format_timestamp(um.get("timestamp"))
-            content = um.get("content", "")[:300]
-            st.markdown(f"**{ts}** — {content}")
+            content = um.get("content", "")
+            max_len = 300
+            truncated = len(content) > max_len
+            display_text = content[:max_len]
+            if truncated:
+                display_text += "… (truncated)"
+            with st.container(border=True):
+                st.caption(f"**{ts}**")
+                st.markdown(display_text)
     else:
         st.caption("No user messages in this session.")
 
@@ -621,11 +682,12 @@ def page_skills():
             orientation="h",
             labels={"x": "Load Count", "y": "Skill"},
         )
-        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=max(300, len(display) * 22))
+        fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=max(300, len(display) * 22))
         st.plotly_chart(fig, width='stretch')
 
     with col_ch2:
         st.subheader("Token Estimate Distribution")
+        st.caption("~4 characters per token for English text")
         token_vals = [
             s.get("token_estimate", 0)
             for s in skills
@@ -639,7 +701,7 @@ def page_skills():
                 nbins=min(20, len(token_vals)),
                 labels={"x": "Token Estimate", "y": "Frequency"},
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+            fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=300)
             st.plotly_chart(fig, width='stretch')
         else:
             st.caption("No token data available.")
@@ -674,7 +736,7 @@ def page_skills():
             barmode="stack",
             margin=dict(l=0, r=0, t=0, b=0),
             height=350,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5),
         )
         st.plotly_chart(fig, width='stretch')
 
@@ -702,9 +764,12 @@ def page_skills():
     st.divider()
     st.subheader("🔎 Skill Drill-Down")
     skill_names_list = [s.get("name", "unknown") for s in skills]
+    # Default to most-loaded skill
+    default_skill = skill_names_list[0] if skill_names_list else None
     selected_skill = st.selectbox(
         "Select a skill to see sessions that loaded it:",
         options=[""] + skill_names_list,
+        index=1 if default_skill else 0,
         key="skill_drilldown",
     )
     if selected_skill:
@@ -715,6 +780,7 @@ def page_skills():
                     preceding = (sk.get("preceding_user_message") or "")[:100]
                     matching_sessions.append({
                         "Session ID": str(sess.get("session_id", "—"))[:30],
+                        "Session Title": sess.get("chat_name") or "Untitled",
                         "Date": format_timestamp(sess.get("started_at")),
                         "Platform": sess.get("platform", "—"),
                         "Preceding Message": preceding,
@@ -725,25 +791,6 @@ def page_skills():
             st.dataframe(matching_sessions, width='stretch', hide_index=True)
         else:
             st.caption(f"No sessions found for skill: {selected_skill}")
-
-    # Preceding messages
-    st.divider()
-    st.subheader("💬 Most Common Preceding Messages")
-    msg_counts = {}
-    for sess in sessions:
-        for sk in sess.get("skills_loaded", []):
-            msg = sk.get("preceding_user_message")
-            if msg:
-                truncated = msg[:80]
-                msg_counts[truncated] = msg_counts.get(truncated, 0) + 1
-    if msg_counts:
-        top_msgs = sorted(msg_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-        msg_data = [
-            {"Count": c, "Message": m} for m, c in top_msgs
-        ]
-        st.dataframe(msg_data, width='stretch', hide_index=True)
-    else:
-        st.caption("No preceding user messages found.")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -774,24 +821,45 @@ def page_tools():
 
     with col_ch1:
         st.subheader("Tools by Call Count")
+        show_all_tools = st.checkbox("Show all tools", value=False, key="tools_show_all")
+        display_tools = tools if show_all_tools else tools[:10]
         fig = px.bar(
-            x=[t.get("count", 0) for t in tools],
-            y=[t.get("name", "unknown") for t in tools],
+            x=[t.get("count", 0) for t in display_tools],
+            y=[t.get("name", "unknown") for t in display_tools],
             orientation="h",
             labels={"x": "Call Count", "y": "Tool"},
         )
-        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=max(300, len(tools) * 22))
+        fig.update_layout(
+            bargap=0.15,
+            margin=dict(l=200, r=0, t=0, b=0),
+            height=max(300, len(display_tools) * 22),
+        )
+        fig.update_yaxes(tickfont=dict(size=11))
         st.plotly_chart(fig, width='stretch')
+        if not show_all_tools and len(tools) > 10:
+            st.caption(f"Showing top 10 of {len(tools)} tools. Check 'Show all tools' to see everything.")
 
     with col_ch2:
         st.subheader("Tool Call Distribution")
         if len(tools) > 1:
+            n_tools = len(tools)
+            colors = golden_ratio_colors(n_tools)
             fig = px.pie(
                 values=[t.get("count", 0) for t in tools],
                 names=[t.get("name", "unknown") for t in tools],
                 hole=0.4,
+                color_discrete_sequence=colors,
             )
-            fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=350)
+            fig.update_traces(
+                hovertemplate="<b>%{label}</b><br>%{value} calls (%{percent})<extra></extra>",
+                textposition="inside",
+                textinfo="percent",
+            )
+            fig.update_layout(
+                margin=dict(l=20, r=20, t=0, b=0),
+                height=400,
+                showlegend=False,
+            )
             st.plotly_chart(fig, width='stretch')
         else:
             st.caption("Only one tool — cannot render distribution.")
@@ -828,7 +896,7 @@ def page_tools():
             barmode="stack",
             margin=dict(l=0, r=0, t=0, b=0),
             height=350,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5),
         )
         st.plotly_chart(fig, width='stretch')
 
@@ -846,7 +914,7 @@ def page_tools():
             nbins=min(20, len(tool_counts_per_session)),
             labels={"x": "Tool Calls", "y": "Sessions"},
         )
-        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=300)
+        fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=300)
         st.plotly_chart(fig, width='stretch')
 
     st.divider()
@@ -872,6 +940,7 @@ def page_tools():
     selected_tool = st.selectbox(
         "Select a tool to see sessions that used it:",
         options=[""] + tool_names_list,
+        index=1,
         key="tool_drilldown",
     )
     if selected_tool:
@@ -881,6 +950,7 @@ def page_tools():
                 if tc.get("tool_name") == selected_tool:
                     matching_sessions.append({
                         "Session ID": str(sess.get("session_id", "—"))[:30],
+                        "Session Title": sess.get("chat_name") or "Untitled",
                         "Date": format_timestamp(sess.get("started_at")),
                         "Model": sess.get("model", "—"),
                         "Tool Calls": tc.get("count", 0),
