@@ -452,7 +452,7 @@ def page_session_detail():
         <div id="session-detail"></div>
         <script>
             setTimeout(function() {
-                var anchor = document.getElementById('detail-top-anchor');
+                var anchor = document.getElementById('session-detail');
                 if (anchor) {
                     anchor.scrollIntoView({behavior: 'instant', block: 'start'});
                 }
@@ -721,8 +721,10 @@ def page_skills():
         st.plotly_chart(fig, width='stretch')
 
     with col_ch2:
-        st.subheader("Token Estimate Distribution")
-        st.caption("~4 characters per token for English text")
+        # 1. Clearer Title and Caption
+        st.subheader("Skill Sizes (Token Footprint)")
+        st.caption("Shows how many distinct skills fall into different size ranges.")
+        
         token_vals = [
             s.get("token_estimate", 0)
             for s in skills
@@ -730,13 +732,27 @@ def page_skills():
         ] if "token_estimate" in (skills[0] if skills else {}) else [
             s.get("load_count", 0) * 500 for s in skills
         ]
+        
         if token_vals:
             fig = px.histogram(
                 x=token_vals,
-                nbins=min(20, len(token_vals)),
-                labels={"x": "Token Estimate", "y": "Frequency"},
+                nbins=40,
+                labels={"x": "Skill Size (Tokens)", "y": "Number of Skills"},
             )
-            fig.update_layout(bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=300)
+            
+            # 2. Force the hover text to speak in plain English
+            fig.update_traces(
+                hovertemplate="<b>Size Range:</b> %{x} tokens<br><b>Skill Count:</b> %{y} skills<extra></extra>"
+            )
+            
+            # 3. Explicit Axis Titles
+            fig.update_layout(
+                bargap=0.15, 
+                margin=dict(l=0, r=0, t=0, b=0), 
+                height=350,
+                yaxis_title="Number of Distinct Skills",
+                xaxis_title="Estimated Tokens per Skill"
+            )
             st.plotly_chart(fig, width='stretch')
         else:
             st.caption("No token data available.")
@@ -1027,6 +1043,487 @@ def _compute_tools_from_sessions(sessions):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Log Payloads Data Helpers (for Mindlayer Skills page)
+# ──────────────────────────────────────────────────────────────────────
+
+def _get_log_payloads():
+    """Return log_payloads.operations from snapshot, or empty list."""
+    snap = get_snapshot()
+    if not snap:
+        return []
+    lp = snap.get("log_payloads", {})
+    return lp.get("operations", [])
+
+
+def _fmt_duration(ms: int | None) -> str:
+    """Format milliseconds to human-readable string (matching telemetry server)."""
+    if ms is None or ms <= 0:
+        return "0s"
+    if ms < 1000:
+        return f"{ms}ms"
+    s = ms / 1000
+    if s < 60:
+        return f"{s:.1f}s"
+    m = s / 60
+    if m < 60:
+        return f"{int(m)}m {int(s % 60)}s"
+    h = m / 60
+    if h < 24:
+        return f"{int(h)}h {int(m % 60)}m"
+    d = h / 24
+    return f"{int(d)}d {int(h % 24)}h"
+
+
+def _fmt_ts(ts_str: str | None) -> str:
+    """Format ISO timestamp for display in local time."""
+    if not ts_str:
+        return "—"
+    try:
+        s = ts_str.replace("Z", "+00:00").replace(" ", "T")
+        dt = datetime.fromisoformat(s)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ts_str[:19] if len(ts_str) >= 19 else str(ts_str)
+
+
+def _parse_date_hour(ts_str: str | None) -> tuple[str, str]:
+    """Parse ISO timestamp into (date_str, hour_str) like '2026-06-18', '14:00'."""
+    if not ts_str:
+        return ("unknown", "00:00")
+    try:
+        s = ts_str.replace("Z", "+00:00").replace(" ", "T")
+        dt = datetime.fromisoformat(s)
+        return (dt.strftime("%Y-%m-%d"), dt.strftime("%H:00"))
+    except Exception:
+        return ("unknown", "00:00")
+
+
+def _parse_date(ts_str: str | None) -> str:
+    """Extract YYYY-MM-DD from ISO timestamp."""
+    d, _ = _parse_date_hour(ts_str)
+    return d
+
+
+def _parse_week(ts_str: str | None) -> str:
+    """Extract ISO week label like '2026-W25'."""
+    if not ts_str:
+        return "unknown"
+    try:
+        s = ts_str.replace("Z", "+00:00").replace(" ", "T")
+        dt = datetime.fromisoformat(s)
+        iso = dt.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    except Exception:
+        return "unknown"
+
+
+def _parse_month(ts_str: str | None) -> str:
+    """Extract YYYY-MM from ISO timestamp."""
+    d = _parse_date(ts_str)
+    return d[:7] if len(d) >= 7 else d
+
+
+def _compute_entity_rollup(operations: list[dict]) -> list[dict]:
+    """
+    Group operations by workflow-id (from metadata) into entities.
+    Standalone ops (no workflow-id) get their own entity.
+    Returns list of {entity_id, tool_name, command, status, total_duration_ms, start_time, end_time}.
+    """
+    # Separate workflow ops from standalone
+    workflows: dict[str, list[dict]] = {}
+    standalones: list[dict] = []
+
+    for op in operations:
+        wf_id = (op.get("metadata") or {}).get("workflow-id")
+        if wf_id:
+            workflows.setdefault(wf_id, []).append(op)
+        else:
+            standalones.append(op)
+
+    entities = []
+
+    # Workflow entities
+    for wf_id, steps in workflows.items():
+        steps_sorted = sorted(steps, key=lambda x: x.get("started_at", ""))
+        # Determine end-to-end status matching telemetry server SQL:
+        #   1. Any step with stage=finalize & status=success → success
+        #   2. Most recent step status == failure → failure
+        #   3. Most recent step status == success → abandoned
+        #   4. Else: most recent step status
+        most_recent = steps_sorted[-1] if steps_sorted else {}
+        most_recent_status = most_recent.get("status", "unknown")
+        has_finalized_success = any(
+            (s.get("metadata") or {}).get("stage") == "finalize"
+            and s.get("status") == "success"
+            for s in steps_sorted
+        )
+        if has_finalized_success:
+            final_status = "success"
+        elif most_recent_status == "failure":
+            final_status = "failure"
+        elif most_recent_status == "success":
+            final_status = "abandoned"
+        else:
+            final_status = most_recent_status
+
+        total_ms = sum(s.get("duration_ms", 0) or 0 for s in steps_sorted)
+        entities.append({
+            "entity_id": wf_id,
+            "tool_name": steps_sorted[0].get("tool_name", "unknown"),
+            "command": steps_sorted[0].get("command", "unknown"),
+            "status": final_status,
+            "total_duration_ms": total_ms,
+            "start_time": steps_sorted[0].get("started_at"),
+            "end_time": steps_sorted[-1].get("finished_at"),
+            "steps": steps_sorted,
+            "is_workflow": True,
+        })
+
+    # Standalone entities
+    for op in standalones:
+        entities.append({
+            "entity_id": f"std_{op.get('source_file', '')}",
+            "tool_name": op.get("tool_name", "unknown"),
+            "command": op.get("command", "unknown"),
+            "status": op.get("status", "unknown"),
+            "total_duration_ms": op.get("duration_ms", 0) or 0,
+            "start_time": op.get("started_at"),
+            "end_time": op.get("finished_at"),
+            "steps": [op],
+            "is_workflow": False,
+        })
+
+    return entities
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Page: Mindlayer Skills (adapted from skills-telemetry-server dashboard)
+# ──────────────────────────────────────────────────────────────────────
+
+def page_mindlayer_skills():
+    st.header("🧠 Mindlayer Skills Telemetry")
+
+    if show_api_error():
+        return
+
+    operations = _get_log_payloads()
+    if not operations:
+        st.info("No log payloads data available. Run the collector to generate data.", icon="ℹ️")
+        return
+
+    # ── Filters ──────────────────────────────────────────────────────
+    with st.container(border=True):
+        st.caption("**Controls**")
+        all_tools = sorted(set(op.get("tool_name", "unknown") for op in operations))
+        all_cmds = sorted(set(op.get("command", "unknown") for op in operations))
+        all_statuses = sorted(set(op.get("status", "unknown") for op in operations))
+
+        f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+        with f1:
+            selected_tool = st.selectbox("Tool", ["All"] + all_tools, key="ml_tool")
+        with f2:
+            selected_command = st.selectbox("Command", ["All"] + all_cmds, key="ml_command")
+        with f3:
+            selected_status = st.selectbox("Status", ["All"] + all_statuses, key="ml_status")
+        with f4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            clear = st.button("Clear", key="ml_clear", use_container_width=True)
+            if clear:
+                selected_tool = "All"
+                selected_command = "All"
+                selected_status = "All"
+
+    # Apply filters
+    filtered = operations
+    if selected_tool != "All":
+        filtered = [op for op in filtered if op.get("tool_name") == selected_tool]
+    if selected_command != "All":
+        filtered = [op for op in filtered if op.get("command") == selected_command]
+    if selected_status != "All":
+        filtered = [op for op in filtered if op.get("status") == selected_status]
+
+    if not filtered:
+        st.warning("No operations match the selected filters.", icon="⚠️")
+        return
+
+    # ── Entity rollup ──
+    entities = _compute_entity_rollup(filtered)
+    total_executions = len(entities)
+
+    # Status counts
+    status_counts: dict[str, int] = {}
+    for e in entities:
+        s = e["status"]
+        status_counts[s] = status_counts.get(s, 0) + 1
+    STATUS_COLORS = {
+        "success": "#10b981", "failure": "#ef4444", "abandoned": "#f59e0b",
+        "failed": "#ef4444", "incomplete": "#f59e0b", "unknown": "#94a3b8",
+    }
+    STATUS_ORDER = ["success", "abandoned", "incomplete", "failure", "failed", "unknown"]
+
+    # ── KPI Row ───────────────────────────────────────────────────────
+    st.markdown("### Metrics Dashboard")
+
+    kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+
+    with kpi_col1:
+        st.metric("Total Executions", total_executions)
+        # Status breakdown bar
+        if status_counts:
+            total_for_bar = sum(status_counts.values())
+            bar_html = '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;width:100%;background:#e2e8f0;margin-top:4px;">'
+            for s in STATUS_ORDER:
+                if s in status_counts:
+                    pct = status_counts[s] / total_for_bar * 100
+                    color = STATUS_COLORS.get(s, "#94a3b8")
+                    bar_html += f'<div style="width:{pct:.1f}%;background:{color};" title="{s}: {status_counts[s]}"></div>'
+            bar_html += '</div>'
+            st.html(bar_html)
+            # Legend
+            legend_parts = []
+            for s in STATUS_ORDER:
+                if s in status_counts:
+                    color = STATUS_COLORS.get(s, "#94a3b8")
+                    legend_parts.append(
+                        f'<span style="color:{color};font-weight:600;font-size:0.75rem;">● {s} ({status_counts[s]})</span>'
+                    )
+            st.html('<div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">' + " ".join(legend_parts) + '</div>')
+
+    with kpi_col2:
+        st.subheader("Tool Time Usage")
+        tool_time: dict[str, float] = {}
+        for e in entities:
+            tn = e["tool_name"]
+            tool_time[tn] = tool_time.get(tn, 0) + e["total_duration_ms"]
+        if tool_time:
+            items = sorted(tool_time.items(), key=lambda x: x[1], reverse=True)
+            labels = [k for k, _ in items]
+            values = [v for _, v in items]
+            fig = px.bar(
+                x=values, y=labels, orientation="h",
+                labels={"x": "Duration (ms)", "y": "Tool"},
+                color_discrete_sequence=["#8b5cf6"],
+            )
+            fig.update_layout(
+                bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=max(200, len(items) * 24),
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    with kpi_col3:
+        st.subheader("Top Commands by Time")
+        cmd_time: dict[str, float] = {}
+        for e in entities:
+            cn = e["command"]
+            cmd_time[cn] = cmd_time.get(cn, 0) + e["total_duration_ms"]
+        if cmd_time:
+            items = sorted(cmd_time.items(), key=lambda x: x[1], reverse=True)[:10]
+            labels = [k for k, _ in items]
+            values = [v for _, v in items]
+            fig = px.bar(
+                x=values, y=labels, orientation="h",
+                labels={"x": "Duration (ms)", "y": "Command"},
+                color_discrete_sequence=["#0ea5e9"],
+            )
+            fig.update_layout(
+                bargap=0.15, margin=dict(l=0, r=0, t=0, b=0), height=250,
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ── Activity Timeline ─────────────────────────────────────────────
+    st.divider()
+    st.markdown("### Activity Timeline")
+
+    tl_col1, tl_col2, tl_col3 = st.columns([1, 1, 2])
+    with tl_col1:
+        timeline_grouping = st.selectbox(
+            "Group By", ["Tool", "Command"], key="ml_timeline_group"
+        )
+    with tl_col2:
+        timeline_view = st.selectbox(
+            "Resolution", ["Hourly", "Daily", "Weekly", "Monthly"],
+            index=1, key="ml_timeline_view"
+        )
+
+    # Build timeline data
+    if timeline_view == "Hourly":
+        bucket_fn = _parse_date_hour
+        bucket_label = lambda x: x  # "YYYY-MM-DDTHH:00"
+    elif timeline_view == "Weekly":
+        bucket_fn = lambda ts: _parse_week(ts)
+        bucket_label = lambda x: x
+    elif timeline_view == "Monthly":
+        bucket_fn = lambda ts: _parse_month(ts)
+        bucket_label = lambda x: x
+    else:  # Daily
+        bucket_fn = lambda ts: _parse_date(ts)
+        bucket_label = lambda x: x
+
+    group_key = "tool_name" if timeline_grouping == "Tool" else "command"
+
+    timeline_buckets: dict[str, dict[str, int]] = {}
+    for e in entities:
+        bucket = bucket_fn(e["start_time"])
+        if isinstance(bucket, tuple):
+            bucket = bucket[0]  # _parse_date_hour returns tuple
+        gk = e[group_key]
+        if bucket not in timeline_buckets:
+            timeline_buckets[bucket] = {}
+        timeline_buckets[bucket][gk] = timeline_buckets[bucket].get(gk, 0) + 1
+
+    if timeline_buckets:
+        sorted_buckets = sorted(timeline_buckets.keys())
+        # Get top groups across all buckets
+        all_groups: dict[str, int] = {}
+        for b in sorted_buckets:
+            for gk, cnt in timeline_buckets[b].items():
+                all_groups[gk] = all_groups.get(gk, 0) + cnt
+        top_groups = [g for g, _ in sorted(all_groups.items(), key=lambda x: x[1], reverse=True)[:8]]
+
+        fig = go.Figure()
+        colors = golden_ratio_colors(len(top_groups))
+        for i, g in enumerate(top_groups):
+            counts = [timeline_buckets[b].get(g, 0) for b in sorted_buckets]
+            fig.add_trace(go.Bar(
+                name=g, x=sorted_buckets, y=counts,
+                marker_color=colors[i],
+            ))
+
+        # Window navigation
+        WINDOW_SIZE = 20
+        if len(sorted_buckets) > WINDOW_SIZE:
+            if "ml_tl_offset" not in st.session_state:
+                st.session_state.ml_tl_offset = 0
+            offset = st.session_state.ml_tl_offset
+            start = max(0, min(offset, len(sorted_buckets) - WINDOW_SIZE))
+            end = min(start + WINDOW_SIZE, len(sorted_buckets))
+            fig.update_xaxes(range=[start - 0.5, end - 0.5] if start < len(sorted_buckets) else None)
+
+            nav_prev, nav_label, nav_next = st.columns([1, 2, 1])
+            with nav_prev:
+                if st.button("← Previous", key="ml_tl_prev", disabled=offset <= 0):
+                    st.session_state.ml_tl_offset = max(0, offset - WINDOW_SIZE)
+                    st.rerun()
+            with nav_label:
+                st.caption(f"Showing buckets {start + 1}–{end} of {len(sorted_buckets)}")
+            with nav_next:
+                if st.button("Next →", key="ml_tl_next", disabled=end >= len(sorted_buckets)):
+                    st.session_state.ml_tl_offset = offset + WINDOW_SIZE
+                    st.rerun()
+        else:
+            st.session_state.ml_tl_offset = 0
+
+        fig.update_layout(
+            barmode="stack",
+            margin=dict(l=0, r=0, t=0, b=40),
+            height=350,
+            legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Log Feed Table ────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### Live Feed")
+
+    # Pagination
+    PAGE_SIZE = 25
+    if "ml_page" not in st.session_state:
+        st.session_state.ml_page = 0
+    total_pages = max(1, (len(entities) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = st.session_state.ml_page
+    start_idx = page * PAGE_SIZE
+    end_idx = min(start_idx + PAGE_SIZE, len(entities))
+    page_entities = entities[start_idx:end_idx]
+
+    pag_col1, pag_col2, pag_col3 = st.columns([1, 2, 1])
+    with pag_col1:
+        if st.button("← Previous Page", key="ml_feed_prev", disabled=page <= 0):
+            st.session_state.ml_page = page - 1
+            st.rerun()
+    with pag_col2:
+        st.caption(f"Page {page + 1} of {total_pages}  ({start_idx + 1}–{end_idx} of {len(entities)})")
+    with pag_col3:
+        if st.button("Next Page →", key="ml_feed_next", disabled=page >= total_pages - 1):
+            st.session_state.ml_page = page + 1
+            st.rerun()
+
+    # Render each entity as an expandable card
+    for entity in page_entities:
+        eid = entity["entity_id"]
+        is_wf = entity["is_workflow"]
+        status = entity["status"]
+        status_color = STATUS_COLORS.get(status, "#94a3b8")
+        duration_str = _fmt_duration(entity["total_duration_ms"])
+
+        with st.container(border=True):
+            # Header row
+            h1, h2, h3, h4, h5 = st.columns([2, 1, 1, 1, 0.8])
+            with h1:
+                badge = "🔗" if is_wf else "📋"
+                st.markdown(
+                    f"{badge} **{entity['tool_name']}** · `{entity['command']}`  "
+                    f"<span style='color:{status_color};font-weight:600;'>● {status.upper()}</span>",
+                    unsafe_allow_html=True,
+                )
+            with h2:
+                st.caption(f"Duration: {duration_str}")
+            with h3:
+                st.caption(f"Started: {_fmt_ts(entity['start_time'])}")
+            with h4:
+                st.caption(f"Entity: `{eid[:32]}{'…' if len(eid) > 32 else ''}`")
+            with h5:
+                expand_key = f"ml_expand_{eid}"
+                if st.button("Details", key=f"ml_btn_{eid}"):
+                    st.session_state[expand_key] = not st.session_state.get(expand_key, False)
+
+            # Expandable detail drawer
+            if st.session_state.get(expand_key, False):
+                st.divider()
+                for step in entity["steps"]:
+                    step_status = step.get("status", "unknown")
+                    sc = STATUS_COLORS.get(step_status, "#94a3b8")
+                    with st.container(border=True):
+                        sd1, sd2, sd3 = st.columns([2, 1, 1])
+                        with sd1:
+                            st.markdown(
+                                f"**{step.get('command', '?')}**  "
+                                f"<span style='color:{sc};font-weight:600;'>● {step_status}</span>",
+                                unsafe_allow_html=True,
+                            )
+                        with sd2:
+                            st.caption(f"Duration: {_fmt_duration(step.get('duration_ms'))}")
+                        with sd3:
+                            stage = (step.get("metadata") or {}).get("stage", "")
+                            st.caption(f"Stage: {stage or '—'}")
+
+                        # Input flags
+                        flags = step.get("input_flags") or {}
+                        if flags:
+                            flag_str = "  ".join(
+                                f"`--{k}`: **{str(v)[:80]}**" for k, v in list(flags.items())[:6]
+                            )
+                            st.caption(flag_str)
+                            if len(flags) > 6:
+                                st.caption(f"…and {len(flags) - 6} more flags")
+
+                        # Error
+                        error = step.get("error")
+                        if error:
+                            st.error(str(error)[:500])
+
+                        # Result size
+                        rs = step.get("result_size")
+                        if rs:
+                            st.caption(f"Result size: {rs:,} bytes")
+
+                        # Source file
+                        sf = step.get("source_file", "")
+                        if sf:
+                            st.caption(f"Source: `{sf}`")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Navigation Setup
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1050,8 +1547,12 @@ tools_page = st.Page(
     page_tools, title="Tools", icon="🔧", url_path="tools"
 )
 
+mindlayer_skills_page = st.Page(
+    page_mindlayer_skills, title="Mindlayer Skills", icon="🧠", url_path="mindlayer_skills"
+)
+
 nav = st.navigation(
-    {"Main": [portal_page, overview_page, detail_page, skills_page, tools_page]}
+    {"Main": [portal_page, overview_page, detail_page, skills_page, tools_page, mindlayer_skills_page]}
 )
 
 # ── Sidebar: Shutdown button ──
