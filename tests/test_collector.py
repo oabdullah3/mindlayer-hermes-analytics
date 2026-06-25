@@ -168,7 +168,7 @@ class TestCollector:
             os.remove(log_path)
 
         monkeypatch.setenv("HERMES_HOME", tmp_hermes_home)
-        from userend.collector import collect
+        from collector import collect
         snapshot = collect(hermes_home=tmp_hermes_home)
 
         # Should complete successfully

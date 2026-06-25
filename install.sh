@@ -90,19 +90,19 @@ PLUGIN_LINK="$HERMES_PLUGINS/hermes-analytics"
 
 if [ -L "$PLUGIN_LINK" ]; then
     CURRENT_TARGET=$(readlink "$PLUGIN_LINK")
-    if [ "$CURRENT_TARGET" = "$SCRIPT_DIR/userend" ]; then
-        success "Plugin symlink already points to userend/"
+    if [ "$CURRENT_TARGET" = "$SCRIPT_DIR" ]; then
+        success "Plugin symlink already points to repo root"
     else
         warn "Plugin symlink exists but points to $CURRENT_TARGET — updating"
         rm -f "$PLUGIN_LINK"
         mkdir -p "$HERMES_PLUGINS"
-        ln -sf "$SCRIPT_DIR/userend" "$PLUGIN_LINK"
+        ln -sf "$SCRIPT_DIR" "$PLUGIN_LINK"
         success "Plugin symlink updated"
     fi
 else
     mkdir -p "$HERMES_PLUGINS"
-    ln -sf "$SCRIPT_DIR/userend" "$PLUGIN_LINK"
-    success "Plugin symlink created: ~/.hermes/plugins/hermes-analytics -> userend/"
+    ln -sf "$SCRIPT_DIR" "$PLUGIN_LINK"
+    success "Plugin symlink created: ~/.hermes/plugins/hermes-analytics -> $(pwd)"
 fi
 
 # ──────────────────────────────────────────────────
@@ -138,14 +138,14 @@ if [ -f "snapshot_latest.json" ]; then
     success "snapshot_latest.json already exists — skipping initial collection"
 else
     info "Running collector (this may take a moment)…"
-    if $PYTHON userend/collector.py 2>&1; then
+    if $PYTHON collector.py 2>&1; then
         success "Initial snapshot generated"
         if [ -f "snapshot_latest.json" ]; then
             SESSIONS=$($PYTHON -c "import json; d=json.load(open('snapshot_latest.json')); print(len(d.get('sessions',[])))" 2>/dev/null || echo "?")
             success "Collected $SESSIONS sessions"
         fi
     else
-        warn "Collector had issues — you can re-run it later with: $PYTHON userend/collector.py"
+        warn "Collector had issues — you can re-run it later with: $PYTHON collector.py"
     fi
 fi
 
@@ -162,16 +162,11 @@ echo "    /hermes-snapshot-analytics"
 echo ""
 echo "  Or run components manually:"
 echo ""
-echo "  Single-user (local):"
-echo "    $PYTHON userend/server.py &"
-echo "    streamlit run userend/dashboard.py"
-echo ""
-echo "  Multi-user (shared):"
-echo "    $PYTHON remoteend/server.py &"
-echo "    streamlit run remoteend/dashboard.py"
+echo "    $PYTHON server.py &"
+echo "    streamlit run dashboard.py"
 echo ""
 echo "  Collector only:"
-echo "    $PYTHON userend/collector.py"
+echo "    $PYTHON collector.py"
 echo ""
 echo "================================================"
 echo ""

@@ -329,5 +329,5 @@ def snapshot(tmp_hermes_home, monkeypatch, create_agent_log):
     """Run the collector against the fixture DB and return the snapshot dict."""
     monkeypatch.setenv("HERMES_HOME", tmp_hermes_home)
     # Import here to avoid import-time side effects
-    from userend.collector import collect
+    from collector import collect
     return collect(hermes_home=tmp_hermes_home)

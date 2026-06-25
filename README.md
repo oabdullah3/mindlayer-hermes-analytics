@@ -20,8 +20,8 @@ Or run it manually:
 git clone <this-repo>
 cd hermes-analytics
 ./install.sh
-python3 userend/server.py &
-streamlit run userend/dashboard.py
+python3 server.py &
+streamlit run dashboard.py
 ```
 
 Open **http://localhost:8501**. Done.
@@ -47,16 +47,15 @@ The data comes from your `~/.hermes/` directory — zero Hermes modifications.
 ## How it works (30 seconds)
 
 ```
-~/.hermes/state.db  ──→  userend/collector.py  ──→  userend/server.py  ──→  userend/dashboard.py
+~/.hermes/state.db  ──→  collector.py  ──→  server.py  ──→  dashboard.py
                   ──→  snapshot_latest.json (file fallback)
-                  ──→  remoteend/server.py (optional multi-user)
 ```
 
 1. The **collector** reads your Hermes data and produces a JSON snapshot
 2. The **server** serves that JSON over a REST API
 3. The **dashboard** (Streamlit) reads the API and renders charts
 
-You can refresh the data anytime with the slash command or `python3 userend/collector.py`.
+You can refresh the data anytime with the slash command or `python3 collector.py`.
 
 ---
 
@@ -110,45 +109,25 @@ export HERMES_ANALYTICS_REMOTE="https://hermes-dash.example.com"
 
 ```
 hermes-analytics/
-├── userend/              # Plugin + local single-user stack
-│   ├── plugin.yaml       # Hermes plugin manifest
-│   ├── __init__.py       # Slash command handler
-│   ├── schemas.py        # Slash command parameter schemas
-│   ├── collector.py      # 9-step data extraction pipeline
-│   ├── server.py         # Single-user Flask REST API
-│   └── dashboard.py      # Single-user Streamlit dashboard
-├── remoteend/            # Multi-user shared stack
-│   ├── server.py         # Multi-user Flask REST API
-│   └── dashboard.py      # Multi-user dashboard (user filter + leaderboard)
-├── tests/                # Pytest test suite
-├── install.sh            # One-command setup
-└── requirements.txt      # Python dependencies
+├── plugin.yaml           # Hermes plugin manifest
+├── __init__.py            # Slash command handler (hermes entry point)
+├── schemas.py             # Slash command parameter schemas
+├── collector.py           # 9-step data extraction pipeline
+├── server.py              # Flask REST API
+├── dashboard.py           # Streamlit dashboard
+├── tests/                 # Pytest test suite
+├── install.sh             # One-command setup
+├── requirements.txt       # Python dependencies
+├── archive/               # Design docs, ADRs, OpenSpec changes
+├── docs/                  # Architecture decision records
+└── openspec/              # OpenSpec config and specs
 ```
-
-Root `collector.py`, `server.py`, and `dashboard.py` are backward-compatible shims.
 
 ---
 
 ## Remote setup (team dashboard)
 
-You want one dashboard showing analytics from multiple people.
-
-### Server side (one machine)
-
-```bash
-git clone <this-repo>
-cd hermes-analytics
-./install.sh
-python3 remoteend/server.py
-```
-
-Start the multi-user dashboard:
-
-```bash
-streamlit run remoteend/dashboard.py
-```
-
-The remote dashboard includes a **user filter dropdown** and a **leaderboard** ranking users by sessions, tokens, and tool calls.
+> **Note:** Remote multi-user dashboard is planned for a future release. The collector already supports pushing snapshots to a remote URL, but the multi-user server/dashboard will be built separately.
 
 ### User side (each person's machine)
 
@@ -162,10 +141,10 @@ export HERMES_ANALYTICS_REMOTE="http://your-server:5555"
 Then use `/hermes-snapshot-analytics` in Hermes, or run:
 
 ```bash
-python3 userend/collector.py
+python3 collector.py
 ```
 
-The collector pushes to the remote server. Each user's analytics appear on the shared dashboard.
+The collector pushes to the remote server.
 
 ---
 
@@ -194,20 +173,20 @@ Tests cover collector pipeline, API endpoints, and schema validation. All tests 
 
 ## Plugin installation
 
-The `install.sh` script creates a symlink:
+Install via `hermes plugins install`:
 
+```bash
+hermes plugins install https://github.com/oabdullah3/mindlayer-hermes-analytics
 ```
-~/.hermes/plugins/hermes-analytics → userend/
-```
 
-Hermes discovers the plugin automatically. Verify with `/plugins` in a Hermes chat.
-
-Manual installation:
+Or manually:
 
 ```bash
 mkdir -p ~/.hermes/plugins
-ln -sf /path/to/hermes-analytics/userend ~/.hermes/plugins/hermes-analytics
+ln -sf /path/to/hermes-analytics ~/.hermes/plugins/hermes-analytics
 ```
+
+Hermes discovers the plugin automatically.
 
 ---
 

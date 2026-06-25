@@ -4,7 +4,16 @@ description: Analytics dashboard for your Hermes Agent — track skills, tools, 
 provides_commands:
   - hermes-snapshot-analytics
 requires_env:
+  - name: HERMES_ANALYTICS_USER
+    description: "Your username for the analytics dashboard (default: $USER)"
+    url: ""
+    secret: false
   - name: HERMES_ANALYTICS_REMOTE
     description: "URL of the company-wide Hermes Analytics dashboard (optional — plugin works locally without it)"
     url: ""
+    secret: false
+optional_env:
+  - name: HERMES_ANALYTICS_USER
+    description: "Your username for the company-wide dashboard (defaults to your OS username)"
+    prompt: "Your username (leave blank for OS default)"
     secret: false
