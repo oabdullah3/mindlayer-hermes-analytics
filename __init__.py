@@ -107,11 +107,67 @@ def _resolve_username() -> str:
 # Slash command handler
 # ──────────────────────────────────────────────────────────────────────
 
+def _ensure_dependencies() -> str | None:
+    """Auto-install missing Python packages. Returns an error message or None."""
+    missing = []
+    for pkg in ("flask", "streamlit", "plotly"):
+        try:
+            __import__(pkg)
+        except ImportError:
+            missing.append(pkg)
+    if not missing:
+        return None
+
+    logger.info("Auto-installing missing dependencies: %s", missing)
+    reqs_path = _PLUGIN_DIR / "requirements.txt"
+
+    def _try_install(extra_args: list[str] | None = None) -> subprocess.CompletedProcess:
+        cmd = [sys.executable, "-m", "pip", "install", "-r", str(reqs_path)]
+        if extra_args:
+            cmd.extend(extra_args)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    # Try normal install first, then fall back to --break-system-packages
+    # (needed on Debian/Ubuntu where PEP 668 blocks system-wide pip installs)
+    result = _try_install()
+    if result.returncode != 0 and "externally-managed" in result.stderr:
+        logger.info("PEP 668 detected — retrying with --break-system-packages")
+        result = _try_install(["--break-system-packages"])
+
+    if result.returncode != 0:
+        stderr_tail = result.stderr.strip().split("\n")[-5:]
+        return (
+            f"❌ Auto-install of dependencies failed.\n\n"
+            f"```\n" + "\n".join(stderr_tail) + "\n```\n\n"
+            f"Try manually:\n```bash\ncd {_PLUGIN_DIR} && pip install -r requirements.txt\n```"
+        )
+
+    # Verify each package is now importable
+    still_missing = []
+    for pkg in missing:
+        try:
+            __import__(pkg)
+        except ImportError:
+            still_missing.append(pkg)
+    if still_missing:
+        return (
+            f"❌ Dependencies installed but still can't import: {', '.join(still_missing)}\n\n"
+            f"Try manually:\n```bash\ncd {_PLUGIN_DIR} && pip install -r requirements.txt\n```"
+        )
+    logger.info("Auto-install complete — flask and streamlit are ready")
+    return None
+
+
 def _handle_snapshot_analytics(raw_args: str) -> str:
     """Handler for /hermes-snapshot-analytics.
 
     Orchestrates: start local server → collect snapshot → start dashboard → return URL.
     """
+    # ── 0. Dependency check (auto-install if missing) ──
+    dep_err = _ensure_dependencies()
+    if dep_err:
+        return dep_err
+
     # Parse optional port args
     server_port = _DEFAULT_SERVER_PORT
     dashboard_port = _DEFAULT_DASHBOARD_PORT
@@ -158,9 +214,18 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
             stdout_out = server_proc.stdout.read().decode("utf-8", errors="replace").strip() if server_proc.stdout else ""
             error_detail = stderr_out or stdout_out or f"exit code {exit_code}"
             _kill_from_pid_file(_SERVER_PID_FILE)
-            return f"❌ Analytics server crashed on startup:\n```\n{error_detail[:500]}\n```"
+            # If it's a missing module, add install hint
+            hint = ""
+            if "ModuleNotFoundError" in error_detail or "ImportError" in error_detail:
+                hint = f"\n\nRun the installer to get dependencies:\n```bash\ncd {_PLUGIN_DIR} && ./install.sh\n```"
+            return f"❌ Analytics server crashed on startup:\n```\n{error_detail[:500]}\n```{hint}"
         _kill_from_pid_file(_SERVER_PID_FILE)
-        return f"❌ Analytics server failed to start within 10 seconds.\nIs Flask installed? Run: `pip install flask`\nIs port {actual_server_port} available?"
+        return (
+            f"❌ Analytics server failed to start within 10 seconds.\n"
+            f"Is Flask installed? Run the installer:\n"
+            f"```bash\ncd {_PLUGIN_DIR} && ./install.sh\n```\n"
+            f"Is port {actual_server_port} available?"
+        )
 
     started_server = True
 

@@ -6,7 +6,36 @@ Track what your Hermes Agent does — skill usage, tool calls, token costs, shel
 
 ## Quickstart (single user, everything local)
 
-You have Hermes Agent running. You want dashboards. Use the slash command:
+You have Hermes Agent running. You want dashboards.
+
+### 1. Install via Hermes plugin system
+
+```bash
+hermes plugins install https://github.com/oabdullah3/mindlayer-hermes-analytics
+```
+
+### 2. Install Python dependencies
+
+> **Important:** `hermes plugins install` does not run `pip install`. You must do this once:
+
+```bash
+cd ~/.hermes/plugins/mindlayer-hermes-analytics
+pip install -r requirements.txt
+```
+
+Or use the bundled installer (handles everything):
+
+```bash
+cd ~/.hermes/plugins/mindlayer-hermes-analytics && ./install.sh
+```
+
+### 3. Restart Hermes and use the slash command
+
+```bash
+hermes gateway restart
+```
+
+Then in a Hermes chat:
 
 ```
 /hermes-snapshot-analytics
