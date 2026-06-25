@@ -1,4 +1,4 @@
-name: hermes-analytics
+name: mindlayer-hermes-analytics
 version: 1.0.0
 description: Analytics dashboard for your Hermes Agent — track skills, tools, tokens, and sessions
 provides_commands:
