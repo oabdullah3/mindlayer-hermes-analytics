@@ -139,8 +139,8 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
     server_proc = subprocess.Popen(
         [sys.executable, str(_PLUGIN_DIR / "server.py")],
         env={**os.environ, "PORT": str(actual_server_port)},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
     with open(_SERVER_PID_FILE, "w") as f:
@@ -149,9 +149,18 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
     server_url = f"http://localhost:{actual_server_port}"
     health_url = f"{server_url}/api/health"
 
-    if not _wait_for_health(health_url, timeout=5.0):
+    if not _wait_for_health(health_url, timeout=10.0):
+        # Check if process died immediately (import error, port conflict, etc.)
+        time.sleep(0.5)
+        exit_code = server_proc.poll()
+        if exit_code is not None:
+            stderr_out = server_proc.stderr.read().decode("utf-8", errors="replace").strip() if server_proc.stderr else ""
+            stdout_out = server_proc.stdout.read().decode("utf-8", errors="replace").strip() if server_proc.stdout else ""
+            error_detail = stderr_out or stdout_out or f"exit code {exit_code}"
+            _kill_from_pid_file(_SERVER_PID_FILE)
+            return f"❌ Analytics server crashed on startup:\n```\n{error_detail[:500]}\n```"
         _kill_from_pid_file(_SERVER_PID_FILE)
-        return "❌ Analytics server failed to start within 5 seconds. Check `~/.hermes/` data and try again."
+        return f"❌ Analytics server failed to start within 10 seconds.\nIs Flask installed? Run: `pip install flask`\nIs port {actual_server_port} available?"
 
     started_server = True
 
