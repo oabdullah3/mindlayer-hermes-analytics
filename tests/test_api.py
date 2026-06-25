@@ -7,7 +7,7 @@ import os
 from unittest import mock
 
 import pytest
-import server
+import remoteend.server as server
 
 
 @pytest.fixture
@@ -313,7 +313,7 @@ class TestRefresh:
         mock_result.returncode = 0
         mock_result.stderr = ""
 
-        with mock.patch("server.subprocess.run", return_value=mock_result):
+        with mock.patch("remoteend.server.subprocess.run", return_value=mock_result):
             resp = client.post("/api/refresh")
             assert resp.status_code == 200
             data = resp.get_json()

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Hermes Analytics — Streamlit Dashboard
+Hermes Analytics — Multi-User Remote Streamlit Dashboard
 
-Multi-page dashboard reading from the Hermes Analytics REST API.
+Reads from the multi-user REST API.
+Includes user filter dropdown and leaderboard.
 Run with:
     streamlit run dashboard.py
     API_BASE_URL=http://my-server:5555 streamlit run dashboard.py
@@ -41,21 +42,29 @@ def load_snapshot():
 
     st.session_state.snapshot_loaded = True
     st.session_state.snapshot = None
+    st.session_state.all_snapshots = None  # raw multi-user data
+    st.session_state.users = []
+    st.session_state.selected_user = None
     st.session_state.api_error = None
 
     try:
         resp = requests.get(f"{API_BASE_URL}/api/snapshots/latest", timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            # API returns {"users": [...], "snapshots": {...}} in multi-user mode.
-            # Extract the first available snapshot for dashboard consumption.
-            if "snapshots" in data and data["snapshots"]:
-                first_user = next(iter(data["snapshots"]))
-                st.session_state.snapshot = data["snapshots"][first_user]
+            # Multi-user format: {"users": [...], "snapshots": {...}}
+            if "snapshots" in data and "users" in data:
+                st.session_state.all_snapshots = data["snapshots"]
+                st.session_state.users = sorted(data["snapshots"].keys())
+                # Default to first user
+                if st.session_state.users:
+                    first_user = st.session_state.users[0]
+                    st.session_state.selected_user = first_user
+                    st.session_state.snapshot = data["snapshots"][first_user]
             else:
+                # Single-user format (fallback)
                 st.session_state.snapshot = data
         elif resp.status_code == 503:
-            st.session_state.api_error = "No snapshot data available. Push a snapshot via the collector first."
+            st.session_state.api_error = "No snapshot data available."
         else:
             st.session_state.api_error = f"API returned status {resp.status_code}: {resp.text[:200]}"
     except requests.ConnectionError:
@@ -68,12 +77,17 @@ def load_snapshot():
 
 
 def get_snapshot():
-    """Return the cached snapshot or None."""
+    """Return the currently selected user's snapshot or None."""
     return st.session_state.get("snapshot")
 
 
+def get_all_snapshots():
+    """Return all user snapshots for leaderboard."""
+    return st.session_state.get("all_snapshots", {})
+
+
 def get_sessions():
-    """Return sessions from snapshot, or empty list."""
+    """Return sessions from current snapshot, or empty list."""
     snap = get_snapshot()
     if not snap:
         return []
@@ -81,7 +95,7 @@ def get_sessions():
 
 
 def get_global_insights():
-    """Return global_insights from snapshot, or empty dict."""
+    """Return global_insights from current snapshot, or empty dict."""
     snap = get_snapshot()
     if not snap:
         return {}
@@ -996,11 +1010,89 @@ def _compute_tools_from_sessions(sessions):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# User Leaderboard
+# ──────────────────────────────────────────────────────────────────────
+
+def compute_leaderboard(all_snapshots: dict) -> list[dict]:
+    """Compute leaderboard from all user snapshots."""
+    board = []
+    for user, snap in all_snapshots.items():
+        sessions = snap.get("sessions", [])
+        total_tokens = sum(
+            sum(v for v in s.get("tokens", {}).values() if isinstance(v, (int, float)))
+            for s in sessions
+        )
+        total_tools = sum(
+            sum(tc.get("count", 0) for tc in s.get("tool_calls", []))
+            for s in sessions
+        )
+        total_skills = sum(
+            len(s.get("skills_loaded", [])) for s in sessions
+        )
+        total_shell = sum(
+            len(s.get("shell_commands", [])) for s in sessions
+        )
+        board.append({
+            "user": user,
+            "sessions": len(sessions),
+            "total_tokens": total_tokens,
+            "total_tool_calls": total_tools,
+            "total_skill_loads": total_skills,
+            "total_shell_commands": total_shell,
+        })
+    return sorted(board, key=lambda x: x["total_tokens"], reverse=True)
+
+
+def show_leaderboard():
+    """Render the leaderboard section in the sidebar."""
+    all_snaps = get_all_snapshots()
+    if not all_snaps or len(all_snaps) < 2:
+        return  # Skip leaderboard for single user
+
+    board = compute_leaderboard(all_snaps)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🏆 Leaderboard")
+
+    # Build a compact metrics table
+    cols = st.sidebar.columns([2, 1, 1])
+    cols[0].write("**User**")
+    cols[1].write("**Sessions**")
+    cols[2].write("**Tokens**")
+
+    for rank, entry in enumerate(board[:10]):
+        medal = ["🥇", "🥈", "🥉"][rank] if rank < 3 else f"{rank + 1}."
+        cols = st.sidebar.columns([2, 1, 1])
+        cols[0].write(f"{medal} {entry['user']}")
+        cols[1].write(str(entry["sessions"]))
+        cols[2].write(f"{entry['total_tokens']:,}")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Navigation Setup
 # ──────────────────────────────────────────────────────────────────────
 
 # Load data once at startup
 load_snapshot()
+
+# ── Sidebar: User filter ──
+all_snaps = get_all_snapshots()
+users = st.session_state.get("users", [])
+
+if len(users) > 1:
+    st.sidebar.markdown("### 👤 Select User")
+    selected = st.sidebar.selectbox(
+        "Choose a user to view their analytics:",
+        users,
+        index=users.index(st.session_state.get("selected_user", users[0]))
+        if st.session_state.get("selected_user") in users else 0,
+    )
+    if selected != st.session_state.get("selected_user"):
+        st.session_state.selected_user = selected
+        st.session_state.snapshot = all_snaps.get(selected)
+        st.rerun()
+
+# Show leaderboard in sidebar
+show_leaderboard()
 
 # Build pages
 portal_page = st.Page(

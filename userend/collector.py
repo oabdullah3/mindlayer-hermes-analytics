@@ -50,37 +50,6 @@ def validate_state_db(hermes_home: str) -> str:
     return db_path
 
 
-def read_user_config() -> dict:
-    """
-    Read ~/.hermes-analytics.conf if it exists.
-    Returns a dict with keys like 'HERMES_ANALYTICS_USER', 'HERMES_ANALYTICS_REMOTE'.
-    The config file uses shell-sourceable KEY=value format, one per line.
-    """
-    config_path = os.path.expanduser("~/.hermes-analytics.conf")
-    config = {}
-    if not os.path.isfile(config_path):
-        return config
-
-    try:
-        with open(config_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                # Skip empty lines and comments
-                if not line or line.startswith("#"):
-                    continue
-                # Parse KEY=value
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    value = value.strip().strip("\"'")
-                    if key:
-                        config[key] = value
-    except OSError as e:
-        print(f"WARNING: Could not read config at {config_path}: {e}", file=sys.stderr)
-
-    return config
-
-
 def open_db_readonly(db_path: str) -> sqlite3.Connection:
     """Open state.db in read-only mode via URI."""
     uri = f"file:{db_path}?mode=ro"
@@ -1016,7 +985,7 @@ def write_local_snapshot(snapshot: dict, path: str = "snapshot_latest.json") -> 
 
 def try_remote_push(snapshot: dict, remote_url: str, username: str | None = None) -> bool:
     """
-    Attempt to POST the snapshot to a remote server.
+    Attempt to POST the snapshot to a server.
     Includes the configured username in the POST body.
     Returns True on success, False on failure.
     """
@@ -1028,7 +997,6 @@ def try_remote_push(snapshot: dict, remote_url: str, username: str | None = None
             "Install with: pip install requests",
             file=sys.stderr,
         )
-        print("INFO: Falling back to local file write.", file=sys.stderr)
         return False
 
     body = dict(snapshot)  # shallow copy to avoid mutating the original
@@ -1173,12 +1141,12 @@ def main() -> None:
     # Run the pipeline
     snapshot = collect(hermes_home=hermes_home)
 
-    # Read user config for username and remote URL overrides
-    user_config = read_user_config()
-    username = os.environ.get("HERMES_ANALYTICS_USER") or user_config.get("HERMES_ANALYTICS_USER") or os.environ.get("USER", "local")
-
-    # Check for remote push mode (env var takes precedence over config file)
-    remote_url = os.environ.get("HERMES_ANALYTICS_REMOTE") or user_config.get("HERMES_ANALYTICS_REMOTE")
+    # Resolve username from env var → $USER → hostname
+    username = (
+        os.environ.get("HERMES_ANALYTICS_USER")
+        or os.environ.get("USER")
+        or os.uname().nodename
+    )
 
     total_skills = sum(
         len(s.get("skills_loaded", [])) for s in snapshot["sessions"]
@@ -1187,29 +1155,39 @@ def main() -> None:
         len(s.get("tool_calls", [])) for s in snapshot["sessions"]
     )
     total_log_payloads = len(snapshot.get("log_payloads", {}).get("operations", []))
+    session_count = snapshot["global_insights"]["total_sessions"]
 
-    # Always push-first: POST to server (default localhost if no remote configured).
-    # The server only knows about data it receives — it never reads files off disk.
-    target_url = remote_url or "http://localhost:5555"
-    success = try_remote_push(snapshot, target_url, username=username)
-    if success:
-        print(
-            f"SUCCESS: Snapshot pushed to {target_url}/api/snapshots\n"
-            f"  {snapshot['global_insights']['total_sessions']} sessions, "
-            f"{total_skills} skill loads, "
-            f"{total_tools} tool types, "
-            f"{total_log_payloads} log payloads",
-        )
+    # ── Push priority: local server → remote server → local file ──
+    push_results: list[str] = []
+    local_file_path = args.output
+
+    # 1. Try local server (started by slash command)
+    local_server_port = os.environ.get("HERMES_ANALYTICS_SERVER_PORT", "5555")
+    local_url = f"http://localhost:{local_server_port}"
+    if try_remote_push(snapshot, local_url, username=username):
+        push_results.append(f"  Pushed to local server ({local_url})")
     else:
-        # Fallback: write local file (server was unreachable)
-        path = write_local_snapshot(snapshot, args.output)
-        print(
-            f"SUCCESS: Snapshot written to {path} (server unreachable — start server.py first to push)\n"
-            f"  {snapshot['global_insights']['total_sessions']} sessions, "
-            f"{total_skills} skill loads, "
-            f"{total_tools} tool types, "
-            f"{total_log_payloads} log payloads",
-        )
+        push_results.append(f"  Local server unreachable at {local_url}")
+
+    # 2. Try remote server (env var or hardcoded)
+    remote_url = os.environ.get("HERMES_ANALYTICS_REMOTE")
+    if remote_url:
+        if try_remote_push(snapshot, remote_url, username=username):
+            push_results.append(f"  Pushed to remote server ({remote_url})")
+        else:
+            push_results.append(f"  Remote server unreachable at {remote_url}")
+
+    # 3. Always write local file as fallback
+    local_path = write_local_snapshot(snapshot, local_file_path)
+    push_results.append(f"  Saved locally ({local_path})")
+
+    print(
+        f"SUCCESS: Snapshot collected\n"
+        f"  {session_count} sessions, {total_skills} skill loads, "
+        f"{total_tools} tool types, {total_log_payloads} log payloads",
+    )
+    for result in push_results:
+        print(result)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC} $*"; }
@@ -28,7 +28,7 @@ echo ""
 # ──────────────────────────────────────────────────
 # Step 1: Python & pip check
 # ──────────────────────────────────────────────────
-info "Step 1/4: Checking Python and pip…"
+info "Step 1/5: Checking Python and pip…"
 
 PYTHON=""
 PIP=""
@@ -47,7 +47,6 @@ $PYTHON --version 2>/dev/null || {
     exit 1
 }
 
-# Find pip
 if command -v pip3 &>/dev/null; then
     PIP="pip3"
 elif command -v pip &>/dev/null; then
@@ -62,11 +61,10 @@ success "Python: $($PYTHON --version 2>&1) | pip: $PIP"
 # ──────────────────────────────────────────────────
 # Step 2: Python dependencies
 # ──────────────────────────────────────────────────
-info "Step 2/4: Installing Python dependencies…"
+info "Step 2/5: Installing Python dependencies…"
 
-# Idempotency check
 DEPS_OK=true
-for pkg in flask streamlit plotly pytest; do
+for pkg in flask streamlit plotly; do
     if ! $PYTHON -c "import $pkg" 2>/dev/null; then
         DEPS_OK=false
         break
@@ -83,49 +81,71 @@ else
 fi
 
 # ──────────────────────────────────────────────────
-# Step 3: Userend config
+# Step 3: Plugin symlink
 # ──────────────────────────────────────────────────
-info "Step 3/4: Configuring userend client…"
+info "Step 3/5: Installing Hermes plugin…"
+
+HERMES_PLUGINS="$HOME/.hermes/plugins"
+PLUGIN_LINK="$HERMES_PLUGINS/hermes-analytics"
+
+if [ -L "$PLUGIN_LINK" ]; then
+    CURRENT_TARGET=$(readlink "$PLUGIN_LINK")
+    if [ "$CURRENT_TARGET" = "$SCRIPT_DIR/userend" ]; then
+        success "Plugin symlink already points to userend/"
+    else
+        warn "Plugin symlink exists but points to $CURRENT_TARGET — updating"
+        rm -f "$PLUGIN_LINK"
+        mkdir -p "$HERMES_PLUGINS"
+        ln -sf "$SCRIPT_DIR/userend" "$PLUGIN_LINK"
+        success "Plugin symlink updated"
+    fi
+else
+    mkdir -p "$HERMES_PLUGINS"
+    ln -sf "$SCRIPT_DIR/userend" "$PLUGIN_LINK"
+    success "Plugin symlink created: ~/.hermes/plugins/hermes-analytics -> userend/"
+fi
+
+# ──────────────────────────────────────────────────
+# Step 4: User config (env vars only)
+# ──────────────────────────────────────────────────
+info "Step 4/5: Configuration (environment variables)…"
 
 CONFIG_FILE="$HOME/.hermes-analytics.conf"
-
 if [ -f "$CONFIG_FILE" ]; then
-    # Extract username from config
-    USERNAME=$(grep -oP 'HERMES_ANALYTICS_USER=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "unknown")
-    success "Already configured for: $USERNAME ($CONFIG_FILE)"
+    warn "Old config file found at $CONFIG_FILE — it is no longer used."
+    info "Configuration is now done via environment variables:"
+    echo "  HERMES_ANALYTICS_USER   — your username for dashboards (default: \$USER)"
+    echo "  HERMES_ANALYTICS_REMOTE — remote server URL (default: not set)"
+    echo ""
+    echo "  You can safely delete $CONFIG_FILE if you've migrated to env vars."
 else
-    if [ -x "userend/install.sh" ]; then
-        info "Running userend/install.sh for per-user config…"
-        ./userend/install.sh && success "Userend configured" || {
-            warn "userend/install.sh had issues — you can re-run it later."
-        }
+    success "No old config file — using env vars:"
+    USERNAME="${HERMES_ANALYTICS_USER:-${USER:-$(uname -n)}}"
+    echo "  HERMES_ANALYTICS_USER = $USERNAME"
+    if [ -n "${HERMES_ANALYTICS_REMOTE:-}" ]; then
+        echo "  HERMES_ANALYTICS_REMOTE = $HERMES_ANALYTICS_REMOTE"
     else
-        warn "userend/install.sh not found — skipping user config"
-        warn "Run './userend/install.sh' manually to configure username and remote server."
+        echo "  HERMES_ANALYTICS_REMOTE = (not set - remote push disabled)"
     fi
 fi
 
 # ──────────────────────────────────────────────────
-# Step 4: Initial collector run
+# Step 5: Initial collector run
 # ──────────────────────────────────────────────────
-info "Step 4/4: Running initial collector…"
+info "Step 5/5: Running initial collector…"
 
 if [ -f "snapshot_latest.json" ]; then
     success "snapshot_latest.json already exists — skipping initial collection"
 else
-    if [ -f "collector.py" ] || [ -f "userend/collector.py" ]; then
-        info "Running collector (this may take a moment)…"
-        if $PYTHON collector.py 2>&1; then
-            success "Initial snapshot generated"
-            if [ -f "snapshot_latest.json" ]; then
-                SESSIONS=$($PYTHON -c "import json; d=json.load(open('snapshot_latest.json')); print(len(d.get('sessions',[])))" 2>/dev/null || echo "?")
-                success "Collected $SESSIONS sessions"
-            fi
-        else
-            warn "Collector had issues — you can re-run it later with: $PYTHON collector.py"
+    info "Running collector (this may take a moment)…"
+    if $PYTHON userend/collector.py 2>&1; then
+        success "Initial snapshot generated"
+        if [ -f "snapshot_latest.json" ]; then
+            SESSIONS=$($PYTHON -c "import json; d=json.load(open('snapshot_latest.json')); print(len(d.get('sessions',[])))" 2>/dev/null || echo "?")
+            success "Collected $SESSIONS sessions"
         fi
     else
-        warn "collector.py not found — skipping initial collection"
+        warn "Collector had issues — you can re-run it later with: $PYTHON userend/collector.py"
     fi
 fi
 
@@ -137,17 +157,21 @@ echo "================================================"
 echo "  Installation Complete!"
 echo "================================================"
 echo ""
-echo "  Start the server:"
-echo "    $PYTHON server.py &"
+echo "  Use the slash command inside Hermes:"
+echo "    /hermes-snapshot-analytics"
 echo ""
-echo "  Start the dashboard:"
-echo "    streamlit run dashboard.py"
+echo "  Or run components manually:"
 echo ""
-echo "  Open in browser:"
-echo "    http://localhost:8501"
+echo "  Single-user (local):"
+echo "    $PYTHON userend/server.py &"
+echo "    streamlit run userend/dashboard.py"
 echo ""
-echo "  Run collector again:"
-echo "    $PYTHON collector.py"
+echo "  Multi-user (shared):"
+echo "    $PYTHON remoteend/server.py &"
+echo "    streamlit run remoteend/dashboard.py"
+echo ""
+echo "  Collector only:"
+echo "    $PYTHON userend/collector.py"
 echo ""
 echo "================================================"
 echo ""
