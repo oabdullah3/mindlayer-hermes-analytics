@@ -1193,6 +1193,8 @@ def _compute_entity_rollup(operations: list[dict]) -> list[dict]:
             "is_workflow": False,
         })
 
+    # Sort newest-first so the log feed shows recent entries at the top
+    entities.sort(key=lambda e: e.get("start_time") or "", reverse=True)
     return entities
 
 

@@ -255,6 +255,7 @@ def _compute_entity_rollup(operations: list[dict]) -> list[dict]:
             "start_time": op.get("started_at"), "end_time": op.get("finished_at"),
             "steps": [op], "is_workflow": False,
         })
+    entities.sort(key=lambda e: e.get("start_time") or "", reverse=True)
     return entities
 
 
