@@ -111,34 +111,41 @@ def _resolve_username() -> str:
 def _ensure_dependencies() -> str | None:
     """Auto-install missing Python packages into the running environment.
 
-    Hermes plugins run in a venv or managed Python that may not have pip
-    bootstrapped.  We handle four scenarios:
+    Runs on every /hermes-snapshot-analytics invocation.  Handles:
+      - Already installed → prints info, returns None (fast path)
+      - pip missing from the venv → bootstraps via ensurepip (stdlib)
+      - PEP 668 externally-managed → retries with --break-system-packages
+      - Install failure → returns a formatted error
 
-    1. Dependencies already importable → no-op
-    2. pip missing from the interpreter → bootstrap via ensurepip (stdlib)
-    3. PEP 668 externally-managed-environment → retry with --break-system-packages
-    4. Everything else → report the error with a manual fallback
+    Logs every step so the user can see exactly what happened.
     """
-    required = ("flask", "streamlit", "plotly")
-    missing = [p for p in required]
-    for pkg in required:
+    required_runtime = ("flask", "streamlit", "plotly")
+    missing = [p for p in required_runtime]
+    already_have = []
+    for pkg in required_runtime:
         try:
             __import__(pkg)
+            already_have.append(pkg)
             missing.remove(pkg)
         except ImportError:
             pass
+
+    print(f"  📦 Dependencies: {', '.join(already_have)} already present")
+
     if not missing:
+        print("  ✅ All runtime dependencies ready — nothing to install")
         return None
 
-    logger.info("Auto-installing missing dependencies: %s", missing)
+    print(f"  ⚙️  Missing: {', '.join(missing)} — auto-installing…")
+    print(f"  🐍 Python: {sys.executable}")
     reqs_path = _PLUGIN_DIR / "requirements.txt"
+    print(f"  📄 Requirements: {reqs_path}")
 
     def _run_pip(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
         cmd = [sys.executable, "-m", "pip"] + args
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
-    # ── Step 0: bootstrap pip if the interpreter is missing it ──
-    # Hermes may ship a venv without pip.  ensurepip is always present (3.4+).
+    # ── Step 0: check for pip ──
     have_pip = False
     try:
         check = _run_pip(["--version"], timeout=10)
@@ -146,14 +153,17 @@ def _ensure_dependencies() -> str | None:
     except Exception:
         pass
 
-    if not have_pip:
-        logger.info("pip not available — bootstrapping via ensurepip")
+    if have_pip:
+        print("  🔧 pip found in this Python environment")
+    else:
+        print("  🔧 pip NOT found — bootstrapping via ensurepip (Python stdlib)…")
         bootstrap = subprocess.run(
             [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
             capture_output=True, text=True, timeout=60,
         )
         if bootstrap.returncode != 0:
             tail = bootstrap.stderr.strip().split("\n")[-5:]
+            print("  ❌ ensurepip bootstrap failed")
             return (
                 "❌ Could not bootstrap pip in the Hermes Python environment.\n\n"
                 "```\n" + "\n".join(tail) + "\n```\n\n"
@@ -162,15 +172,18 @@ def _ensure_dependencies() -> str | None:
                 f"{sys.executable} -m ensurepip --upgrade\n"
                 f"{sys.executable} -m pip install -r requirements.txt\n```"
             )
+        print("  ✅ pip bootstrapped successfully")
 
     # ── Step 1: install ──
+    print(f"  📥 Running: {sys.executable} -m pip install -r {reqs_path.name} …")
     result = _run_pip(["install", "-r", str(reqs_path)])
     if result.returncode != 0 and "externally-managed" in result.stderr:
-        logger.info("PEP 668 detected — retrying with --break-system-packages")
+        print("  ⚠️  PEP 668 detected — retrying with --break-system-packages")
         result = _run_pip(["install", "--break-system-packages", "-r", str(reqs_path)])
 
     if result.returncode != 0:
         stderr_tail = result.stderr.strip().split("\n")[-5:]
+        print("  ❌ pip install failed")
         return (
             "❌ Auto-install of dependencies failed.\n\n"
             "```\n" + "\n".join(stderr_tail) + "\n```\n\n"
@@ -179,13 +192,18 @@ def _ensure_dependencies() -> str | None:
             f"{sys.executable} -m pip install -r requirements.txt\n```"
         )
 
+    print("  ✅ pip install completed successfully")
+
     # ── Step 2: verify ──
     still_missing = []
     for pkg in missing:
         try:
             __import__(pkg)
+            print(f"  ✅ {pkg} — import verified")
         except ImportError:
             still_missing.append(pkg)
+            print(f"  ❌ {pkg} — import failed despite pip success")
+
     if still_missing:
         return (
             f"❌ pip install succeeded but import still fails: {', '.join(still_missing)}\n\n"
@@ -194,7 +212,7 @@ def _ensure_dependencies() -> str | None:
             f"{sys.executable} -m pip install -r requirements.txt\n```"
         )
 
-    logger.info("Auto-install complete — %s are ready", ", ".join(missing))
+    print(f"  🎉 All {len(missing)} package(s) installed and verified: {', '.join(missing)}")
     return None
 
 
@@ -284,7 +302,11 @@ def _run_browser_mode(
             _kill_from_pid_file(_SERVER_PID_FILE)
             hint = ""
             if "ModuleNotFoundError" in error_detail or "ImportError" in error_detail:
-                hint = f"\n\nRun the installer:\n```bash\ncd {_PLUGIN_DIR} && ./install.sh\n```"
+                hint = (
+                    f"\n\nDependencies may be missing. Try running with --mode cli first "
+                    f"(the auto-installer runs on every invocation):\n"
+                    f"```\n/hermes-snapshot-analytics --mode cli\n```"
+                )
             return f"❌ Analytics server crashed on startup:\n```\n{error_detail[:500]}\n```{hint}", messages
         _kill_from_pid_file(_SERVER_PID_FILE)
         return (
