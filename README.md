@@ -32,11 +32,20 @@ This starts a local server, collects your Hermes data, and serves the output. In
 
 | Dashboard page | Shows |
 |---|---|
-| Portal Home | Summary cards, top skills & tools |
-| Session Overview | All sessions with model, tokens, duration |
-| Session Detail | One session deep-dive |
-| Skills | Skill usage, token estimates, timeline |
-| Tools | Tool call counts, pie charts, timeline |
+| 🏠 Home | Summary cards, top skills & tools |
+| 📋 Session Overview | All sessions with model, tokens, duration |
+| 🔍 Session Detail | One session deep-dive |
+| ⭐ Skills | Skill usage, token estimates, timeline |
+| 🔧 Tools | Tool call counts, pie charts, timeline |
+| 🧠 Mindlayer Skills | Log payload telemetry — execution metrics, tool time, command rankings, activity timeline, logs feed |
+
+**CLI output** (`--mode cli`) shows everything above in a compact terminal format:
+- Session summary (count, models, platforms, top skills)
+- Token totals across all sessions
+- Skills ranked by load count
+- Tools ranked by call count
+- Shell commands ranked by usage
+- Mindlayer Skills execution stats (status breakdown, tool time, top commands, timeline, recent logs)
 
 **Shutdown:** Click **🛑 Shutdown Analytics** in the dashboard sidebar.
 
