@@ -48,6 +48,12 @@ def _trunc(s: str, max_width: int) -> str:
     return ''.join(result) + "…"
 
 
+def _pad(s: str, width: int) -> str:
+    """Pad or truncate to exactly `width` display columns."""
+    s = _trunc(s, width)
+    return s + " " * (width - _display_width(s))
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Box-drawing primitives — guarantee exact WIDTH on every line
 # ──────────────────────────────────────────────────────────────────────
@@ -434,12 +440,12 @@ def _detail_sessions(sessions: list[dict]) -> None:
                           reverse=True)[:TOP_N]
     print(_row("  Top by messages:"))
     for i, s in enumerate(top_sessions, 1):
-        title = _trunc(s.get("chat_name") or f"#{s.get('session_id', '?')}", 24)
+        title = _pad(s.get("chat_name") or f"#{s.get('session_id', '?')}", 24)
         m = s.get("stats", {}).get("message_count", 0)
         tc = sum(c.get("count", 0) for c in s.get("tool_calls", []))
         tok = sum(int(v or 0) for v in s.get("tokens", {}).values())
         dur = _session_duration(s)
-        model = _trunc(s.get("model") or "?", 16)
+        model = _pad(s.get("model") or "?", 16)
         line = f"  {i}. {title}  {model}  {m}msg {tc}t {_num(tok)}tok {dur}"
         print(_row(line))
 
@@ -505,7 +511,7 @@ def _detail_tokens(sessions: list[dict]) -> None:
     print(_row("  By model:"))
     for i, (model, mt) in enumerate(ranked, 1):
         mtot = mt["input"] + mt["output"]
-        line = (f"  {i}. {_trunc(model, 26)}  "
+        line = (f"  {i}. {_pad(model, 28)}  "
                 f"in={_num(mt['input'])} out={_num(mt['output'])} "
                 f"tot={_num(mtot)} ({mt['sessions']}sess)")
         print(_row(line))
@@ -530,7 +536,7 @@ def _detail_skills(sessions: list[dict], insights: dict) -> None:
     print(_row(f"  {len(skills)} skills · {sum(s['load_count'] for s in skills)} total loads"))
     print(_hline())
     for i, sk in enumerate(top, 1):
-        name = _trunc(sk.get("name") or sk.get("skill_name", "?"), 32)
+        name = _pad(sk.get("name") or sk.get("skill_name", "?"), 32)
         loads = sk.get("load_count", 0)
         tokens_val = sk.get("token_estimate", 0)
         b = _bar(loads, max_loads, 12)
@@ -557,7 +563,7 @@ def _detail_tools(insights: dict) -> None:
     print(_row(f"  {len(tools)} tools · {total_calls} total calls"))
     print(_hline())
     for i, t in enumerate(top, 1):
-        name = _trunc(t["name"], 38)
+        name = _pad(t["name"], 38)
         count = t["count"]
         b = _bar(count, max_calls, 14)
         line = f"  {i}. {name}  {count}calls {b}"
@@ -589,7 +595,7 @@ def _detail_commands(insights: dict) -> None:
         max_c = max(m["count"] for m in most) if most else 1
         print(_row("  Most executed:"))
         for i, cmd in enumerate(most, 1):
-            name = _trunc(cmd["command"], 42)
+            name = _pad(cmd["command"], 42)
             b = _bar(cmd["count"], max_c, 12)
             line = f"  {i}. {name} {cmd['count']}x {b}"
             print(_row(line))
@@ -599,7 +605,7 @@ def _detail_commands(insights: dict) -> None:
         max_f = max(f["failure_count"] for f in failed_list) if failed_list else 1
         print(_row("  Most failed:"))
         for i, fcmd in enumerate(failed_list, 1):
-            name = _trunc(fcmd["command"], 42)
+            name = _pad(fcmd["command"], 42)
             b = _bar(fcmd["failure_count"], max_f, 12)
             line = f"  {i}. {name} {fcmd['failure_count']}x {b}"
             print(_row(line))
@@ -661,7 +667,7 @@ def _detail_mindlayer(log_payloads: dict) -> None:
         print(_row("  Tools by time:"))
         for i, (tn, dur) in enumerate(top_tools, 1):
             b = _bar(dur, total_ms, 12)
-            line = f"  {i}. {_trunc(tn, 30)} {_fmt_duration(int(dur))} ({tool_cnt[tn]}x) {b}"
+            line = f"  {i}. {_pad(tn, 30)} {_fmt_duration(int(dur))} ({tool_cnt[tn]}x) {b}"
             print(_row(line))
 
     if top_cmds:
@@ -670,7 +676,7 @@ def _detail_mindlayer(log_payloads: dict) -> None:
         print(_row("  Commands by time:"))
         for i, (cn, dur) in enumerate(top_cmds, 1):
             b = _bar(dur, total_cmd_ms, 12)
-            line = f"  {i}. {_trunc(cn, 34)} {_fmt_duration(int(dur))} ({cmd_cnt[cn]}x) {b}"
+            line = f"  {i}. {_pad(cn, 34)} {_fmt_duration(int(dur))} ({cmd_cnt[cn]}x) {b}"
             print(_row(line))
 
     if daily:
@@ -690,8 +696,8 @@ def _detail_mindlayer(log_payloads: dict) -> None:
         markers = {"success": "✓", "failure": "✗", "failed": "✗", "abandoned": "◌", "incomplete": "◌"}
         for op in recent:
             mk = markers.get(op.get("status", ""), "?")
-            tool = _trunc(op.get("tool_name", "?"), 20)
-            cmd = _trunc(op.get("command", "?"), 18)
+            tool = _pad(op.get("tool_name", "?"), 20)
+            cmd = _pad(op.get("command", "?"), 18)
             dur = _fmt_duration(op.get("duration_ms"))
             ts = _fmt_ts(op.get("started_at"), short=True)
             line = f"  {mk} {tool} {cmd} {dur} {ts}"
