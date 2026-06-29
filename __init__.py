@@ -7,6 +7,8 @@ Both start a local Flask server, run the collector, launch a local
 Streamlit dashboard, and return the URL.
 """
 
+import contextlib
+import io
 import json
 import logging
 import os
@@ -243,19 +245,28 @@ def _run_cli_mode(snapshot_path: str | None = None,
         error_msg = collector_result.stderr.strip() or collector_result.stdout.strip() or "Unknown error"
         return f"❌ Snapshot collection failed:\n```\n{error_msg[:500]}\n```"
 
-    # 2. Render CLI output
+    # 2. Render CLI output — capture it so it's visible in slash commands too
     from . import cli_metrics
 
-    err = cli_metrics.render_cli(snapshot_path, dashboard=dashboard)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        err = cli_metrics.render_cli(snapshot_path, dashboard=dashboard)
+    cli_output = buf.getvalue()
+
     if err:
-        return err
+        return f"{cli_output}\n{err}" if cli_output.strip() else err
 
     # 3. Show collector push info
+    push_lines: list[str] = []
     for line in collector_result.stdout.strip().split("\n"):
         if "Pushed to" in line or "Saved locally" in line:
-            print(line.strip())
+            push_lines.append(line.strip())
 
-    return ""  # success
+    push_info = "\n".join(push_lines) if push_lines else ""
+
+    # Return captured output so it reaches the user
+    parts = [p for p in [cli_output.rstrip(), push_info] if p]
+    return "\n".join(parts) if parts else ""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -450,7 +461,7 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
                     return err
                 return _format_browser_response(msgs)
             return result
-        return "✅ CLI metrics printed above."  # success sentinel for slash command
+        return "No data."  # empty snapshot / nothing to show
 
     elif mode == "browser":
         err, msgs = _run_browser_mode(server_port, dashboard_port)
@@ -470,18 +481,20 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
     elif mode == "both":
         # Run CLI first
-        cli_err = _run_cli_mode(dashboard=dashboard)
+        cli_result = _run_cli_mode(dashboard=dashboard)
+        cli_failed = cli_result.startswith("❌") if cli_result else True
         # Then browser
         err, msgs = _run_browser_mode(server_port, dashboard_port)
         if err:
             if fallback:
-                # CLI already ran, just show browser error
-                return f"CLI output shown above.\n\nBrowser mode failed:\n{err}"
-            return f"CLI output shown above.\n\nBrowser mode failed:\n{err}"
+                return (f"{cli_result}\n\nBrowser mode failed:\n{err}" if cli_result
+                        else f"Browser mode failed:\n{err}")
+            return (f"{cli_result}\n\nBrowser mode failed:\n{err}" if cli_result
+                    else f"Browser mode failed:\n{err}")
         browser_resp = _format_browser_response(msgs)
-        if cli_err:
-            return f"CLI mode failed ({cli_err})\n\n{browser_resp}"
-        return f"CLI metrics printed above.\n\n{browser_resp}"
+        if cli_failed:
+            return f"CLI mode failed ({cli_result})\n\n{browser_resp}" if cli_result else browser_resp
+        return f"{cli_result}\n\n{browser_resp}"
 
     return f"❌ Unknown mode: {mode}"
 
