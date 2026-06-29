@@ -220,7 +220,8 @@ def _ensure_dependencies() -> str | None:
 # Mode: CLI output (printed to stdout, no browser)
 # ──────────────────────────────────────────────────────────────────────
 
-def _run_cli_mode(snapshot_path: str | None = None) -> str:
+def _run_cli_mode(snapshot_path: str | None = None,
+                  dashboard: str | None = None) -> str:
     """Run collector then print CLI metrics. Returns error string or empty string on success."""
     # 1. Run collector to generate snapshot
     collector_env = {
@@ -245,7 +246,7 @@ def _run_cli_mode(snapshot_path: str | None = None) -> str:
     # 2. Render CLI output
     from . import cli_metrics
 
-    err = cli_metrics.render_cli(snapshot_path)
+    err = cli_metrics.render_cli(snapshot_path, dashboard=dashboard)
     if err:
         return err
 
@@ -410,8 +411,12 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
     # Parse args
     mode = "cli"           # default: CLI (agent can't see browser)
     fallback = False
+    dashboard: str | None = None
     server_port: int | None = None
     dashboard_port: int | None = None
+
+    DASHBOARD_FLAGS = {"--sessions", "--skills", "--tools", "--tokens",
+                       "--commands", "--mindlayer"}
 
     if raw_args:
         for part in raw_args.strip().split():
@@ -421,6 +426,8 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
                     mode = m
             elif part == "--fallback":
                 fallback = True
+            elif part in DASHBOARD_FLAGS:
+                dashboard = part.lstrip("-")
             elif part.startswith("--server-port="):
                 try:
                     server_port = int(part.split("=", 1)[1])
@@ -434,7 +441,7 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
     # ── Execute ──
     if mode == "cli":
-        result = _run_cli_mode()
+        result = _run_cli_mode(dashboard=dashboard)
         if result:
             if fallback:
                 print("CLI mode failed, falling back to browser mode…")
@@ -450,7 +457,7 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
         if err:
             if fallback:
                 print("Browser mode failed, falling back to CLI mode…")
-                cli_err = _run_cli_mode()
+                cli_err = _run_cli_mode(dashboard=dashboard)
                 if cli_err:
                     return cli_err
                 return (
@@ -463,7 +470,7 @@ def _handle_snapshot_analytics(raw_args: str) -> str:
 
     elif mode == "both":
         # Run CLI first
-        cli_err = _run_cli_mode()
+        cli_err = _run_cli_mode(dashboard=dashboard)
         # Then browser
         err, msgs = _run_browser_mode(server_port, dashboard_port)
         if err:
@@ -515,6 +522,10 @@ def _cli_handler(args):
         raw_args_parts.append(f"--mode={args.mode}")
     if getattr(args, "fallback", False):
         raw_args_parts.append("--fallback")
+    # Dashboard flags
+    for flag in ("sessions", "skills", "tools", "tokens", "commands", "mindlayer"):
+        if getattr(args, flag, False):
+            raw_args_parts.append(f"--{flag}")
     raw_args = " ".join(raw_args_parts)
 
     result = _handle_snapshot_analytics(raw_args)
@@ -542,6 +553,30 @@ def _setup_argparse(subparser):
     subparser.add_argument(
         "--dashboard-port", type=int, default=None,
         help=f"Port for the Streamlit dashboard (default: {_DEFAULT_DASHBOARD_PORT})",
+    )
+    subparser.add_argument(
+        "--sessions", action="store_true", default=False,
+        help="Show session detail (CLI mode only)",
+    )
+    subparser.add_argument(
+        "--skills", action="store_true", default=False,
+        help="Show skills leaderboard detail (CLI mode only)",
+    )
+    subparser.add_argument(
+        "--tools", action="store_true", default=False,
+        help="Show tools leaderboard detail (CLI mode only)",
+    )
+    subparser.add_argument(
+        "--tokens", action="store_true", default=False,
+        help="Show token usage detail (CLI mode only)",
+    )
+    subparser.add_argument(
+        "--commands", action="store_true", default=False,
+        help="Show shell commands detail (CLI mode only)",
+    )
+    subparser.add_argument(
+        "--mindlayer", action="store_true", default=False,
+        help="Show Mindlayer Skills detail (CLI mode only)",
     )
     subparser.set_defaults(func=_cli_handler)
 
