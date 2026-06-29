@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -21,14 +22,43 @@ INNER = WIDTH - 2   # content area between │...│
 TOP_N = 5           # show at most top N in any ranking
 
 # ──────────────────────────────────────────────────────────────────────
+# Display-width helpers — CJK chars are 2 columns, not 1 codepoint
+# ──────────────────────────────────────────────────────────────────────
+
+def _display_width(s: str) -> int:
+    """Terminal display columns (CJK wide/fullwidth = 2, else 1)."""
+    w = 0
+    for ch in s:
+        w += 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+    return w
+
+
+def _trunc(s: str, max_width: int) -> str:
+    """Truncate to max_width display columns, appending '…' when cut."""
+    if _display_width(s) <= max_width:
+        return s
+    result: list[str] = []
+    w = 0
+    for ch in s:
+        chw = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+        if w + chw > max_width - 1:  # reserve 1 col for '…'
+            break
+        result.append(ch)
+        w += chw
+    return ''.join(result) + "…"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Box-drawing primitives — guarantee exact WIDTH on every line
 # ──────────────────────────────────────────────────────────────────────
 
 def _row(text: str) -> str:
-    """Return '│' + text padded to INNER chars + '│'.  Always exactly WIDTH."""
-    if len(text) > INNER:
-        text = text[:INNER - 1] + "…"
-    return "│" + text.ljust(INNER) + "│"
+    """Return '│' + text padded to INNER display cols + '│'. Always exactly WIDTH display columns."""
+    dw = _display_width(text)
+    if dw > INNER:
+        text = _trunc(text, INNER)
+        dw = _display_width(text)
+    return "│" + text + " " * (INNER - dw) + "│"
 
 
 def _hline() -> str:
@@ -39,7 +69,8 @@ def _hline() -> str:
 def _top(title: str) -> str:
     """Box top border with embedded title."""
     prefix = f"┌─ {title} "
-    dash_count = WIDTH - len(prefix) - 1
+    prefix_dw = _display_width(prefix)
+    dash_count = WIDTH - prefix_dw - 1
     return prefix + "─" * max(0, dash_count) + "┐"
 
 
@@ -49,8 +80,13 @@ def _bot() -> str:
 
 
 def _banner(text: str) -> str:
-    """Double-line top banner."""
-    return f"╔{'═' * INNER}╗\n║{text.center(INNER)}║\n╚{'═' * INNER}╝"
+    """Double-line top banner, centred by display width."""
+    dw = _display_width(text)
+    left_pad = (INNER - dw) // 2
+    right_pad = INNER - dw - left_pad
+    return (f"╔{'═' * INNER}╗\n"
+            f"║{' ' * left_pad}{text}{' ' * right_pad}║\n"
+            f"╚{'═' * INNER}╝")
 
 
 def _hint(flag: str) -> str:
@@ -117,12 +153,6 @@ def _fmt_ts(ts_val, short: bool = False) -> str:
     except Exception:
         s = str(ts_val)
         return s[:16] if len(s) >= 16 else s
-
-
-def _trunc(s: str, max_len: int) -> str:
-    if len(s) <= max_len:
-        return s
-    return s[:max_len - 1] + "…"
 
 
 def _pct(value: float, total: float) -> str:
